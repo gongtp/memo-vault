@@ -1,0 +1,8 @@
+dist/
+node_modules/
+.test-artifacts/
+docs/previews/
+*.vault.json
+memo-vault-encrypted-*.json
+memo-vault-demo-*.json
+!examples/demo.vault.json
