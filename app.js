@@ -8,7 +8,7 @@ const paths = {
  card:'<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20M6 15h4"/>',
  folder:'<path d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
  shield:'<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z"/><path d="m8 12 3 3 5-6"/>',
- settings:'<path d="m9 3-1 3-3 1-1 3 2 2-2 3 2 3h3l2 3 3-1 1-3 3-1 1-3-2-2 1-3-2-2h-3l-2-3Z"/><circle cx="12" cy="12" r="3"/>',
+ settings:'<path d="M10.186 4.723L10.678 2.592L13.322 2.592L13.814 4.723L15.863 5.571L17.717 4.413L19.587 6.283L18.429 8.137L19.277 10.186L21.408 10.678L21.408 13.322L19.277 13.814L18.429 15.863L19.587 17.717L17.717 19.587L15.863 18.429L13.814 19.277L13.322 21.408L10.678 21.408L10.186 19.277L8.137 18.429L6.283 19.587L4.413 17.717L5.571 15.863L4.723 13.814L2.592 13.322L2.592 10.678L4.723 10.186L5.571 8.137L4.413 6.283L6.283 4.413L8.137 5.571Z"/><circle cx="12" cy="12" r="3"/>',
  lock:'<rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2"/>',
  help:'<circle cx="12" cy="12" r="9"/><path d="M9.5 8.5a2.5 2.5 0 1 1 4 2c-1 .5-1.5 1-1.5 2.5m0 3h.01"/>',
  plus:'<path d="M12 5v14M5 12h14"/>',
@@ -84,7 +84,6 @@ function hidePassword(){showPassword=false;clearTimeout(revealTimer);renderDetai
 function syncButtons(){
  document.querySelectorAll('form button[type="submit"],#gate-submit,#reauth-submit,#decrypt-import').forEach(el=>el.disabled=busy);
  $('gate-submit').disabled=busy||!ready;
- $('gate-import').disabled=busy||!ready||existing;
  $('confirm-import').disabled=busy||!pendingImport||!$('import-confirm').checked;
  if($('verify-actions'))$('verify-actions').disabled=busy;
  $('confirm-delete').disabled=busy||!pendingDelete;
@@ -389,7 +388,7 @@ $('account-form').onsubmit=e=>{
 const closeAccount=()=>{$('account-form').reset();$('account-dialog').close();editId=null;};
 for(const id of ['close-form','cancel-form'])$(id).onclick=closeAccount;
 $('account-dialog').addEventListener('cancel',()=>{$('account-form').reset();editId=null;});
-$('lock').onclick=()=>lock();$('mobile-lock').onclick=()=>lock();$('help').onclick=explain;
+$('help').onclick=explain;
 const autoLock=installAutoLock({document,window,lock,isUnlocked:()=>session.unlocked});
 channel?.addEventListener('message',()=>lock('另一页面已修改信息库，请重新解锁。'));
 document.addEventListener('keydown',e=>{
