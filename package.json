@@ -1,12 +1,12 @@
 {
   "name": "memo-vault",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Memo Vault 本地加密个人信息库",
   "scripts": {
     "dev": "node scripts/preview.mjs",
     "build": "node scripts/build.mjs",
-    "check": "node --check app.js && node --check vault.mjs && node --test tests/*.test.mjs"
+    "check": "node --check app.js && node --check notes.js && node --check notes-model.mjs && node --check vault.mjs && node --check module-vault.mjs && node --check offline.js && node --check sw.js && node --test tests/*.test.mjs"
   }
 }

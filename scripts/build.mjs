@@ -1,10 +1,12 @@
-import {mkdir,readdir,copyFile} from 'node:fs/promises';
+import {mkdir,readdir,copyFile,writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
+import {publicFiles,workerSource} from './app-shell.mjs';
 const root=resolve(import.meta.dirname,'..');
-const files=['index.html','app.js','vault.mjs','lifecycle.mjs','styles.css','icon.svg'];
+const files=publicFiles;
 const output=resolve(root,'dist');
 await mkdir(output,{recursive:true});
 const unexpected=(await readdir(output)).filter(name=>!files.includes(name));
 if(unexpected.length)throw Error('dist contains unexpected files; review them before building.');
-for(const file of files)await copyFile(resolve(root,file),resolve(output,file));
+for(const file of files.filter(file=>file!=='sw.js'))await copyFile(resolve(root,file),resolve(output,file));
+await writeFile(resolve(output,'sw.js'),await workerSource(root));
 console.log(`Built ${files.length} application files into dist/. No user data included.`);

@@ -1,3 +1,4 @@
+import {validateNoteData,pruneNoteData} from './notes-model.mjs';
 // All persisted/exported account data is inside one authenticated ciphertext.
 export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const ITERATIONS = 600000;
@@ -67,7 +68,12 @@ export async function deriveKey(password,e){
 export function validateSettings(value){
   if(value===undefined)return {verifyBeforeActions:true,usesInitialPassword:false};
   if(!value||typeof value.verifyBeforeActions!=='boolean'||typeof value.usesInitialPassword!=='boolean')throw new Error('信息库设置格式无效。');
-  return {verifyBeforeActions:value.verifyBeforeActions,usesInitialPassword:value.usesInitialPassword};
+  const settings={verifyBeforeActions:value.verifyBeforeActions,usesInitialPassword:value.usesInitialPassword};
+  if(value.moduleLocks!==undefined){
+    if(!value.moduleLocks||typeof value.moduleLocks.accounts!=='boolean'||typeof value.moduleLocks.notes!=='boolean')throw new Error('模块锁定设置无效。');
+    settings.moduleLocks={accounts:value.moduleLocks.accounts,notes:value.moduleLocks.notes};
+  }
+  return settings;
 }
 export function validateOptions(value,accounts=[]){
   if(value===undefined)value={categories:[...new Set([...CATEGORIES,...accounts.map(a=>a.category).filter(Boolean)])],methods:[...new Set([...METHODS,...accounts.map(a=>a.method).filter(Boolean)])]};
@@ -81,14 +87,16 @@ export function validateOptions(value,accounts=[]){
   for(const a of accounts)if((a.category&&!result.categories.includes(a.category))||(a.method&&!result.methods.includes(a.method)))throw new Error('账号引用了已删除或不存在的分类/登录方式。');
   return result;
 }
-export async function encryptAccounts(accounts,key,params,settings,options){
+export async function encryptAccounts(accounts,key,params,settings,options,noteData){
   const header={type:TYPE,version:1,cipher:'AES-256-GCM',kdf:'PBKDF2-SHA-256',iterations:params.iterations,salt:params.salt,iv:to64(random(12)),changeId:`${Date.now()}-${Array.from(random(16),n=>n.toString(16).padStart(2,'0')).join('')}`};
   const checked=validateAccounts(accounts);
-  const bytes=encoder.encode(JSON.stringify({schemaVersion:1,accounts:checked,settings:validateSettings(settings),options:validateOptions(options,checked)}));
+  const bytes=encoder.encode(JSON.stringify({schemaVersion:2,accounts:checked,settings:validateSettings(settings),options:validateOptions(options,checked),noteData:validateNoteData(noteData)}));
   try{
     if(bytes.length>5*1024*1024-16)throw new Error('信息库超过当前 5 MB 容量限制。');
     const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv:from64(header.iv,12,12),additionalData:aad(header),tagLength:128},key,bytes);
-    return {...header,ciphertext:to64(new Uint8Array(encrypted))};
+    const envelope={...header,ciphertext:to64(new Uint8Array(encrypted))};
+    if(encoder.encode(JSON.stringify(envelope,null,2)).length>MAX_FILE_BYTES)throw new Error('加密备份超过 8 MB 容量限制。');
+    return envelope;
   }finally{bytes.fill(0);}
 }
 export async function decryptVault(envelope,key){
@@ -96,7 +104,7 @@ export async function decryptVault(envelope,key){
   let plain;
   try{plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:from64(e.iv,12,12),additionalData:aad(e),tagLength:128},key,from64(e.ciphertext,16,5*1024*1024)));}
   catch{throw new Error('主密码不正确，或加密数据已损坏。');}
-  try{const data=JSON.parse(decoder.decode(plain));if(data.schemaVersion!==1)throw new Error('信息库数据版本不受支持。');const accounts=validateAccounts(data.accounts);return {accounts,settings:validateSettings(data.settings),options:validateOptions(data.options,accounts)};}finally{plain.fill(0);}
+  try{const data=JSON.parse(decoder.decode(plain));if(![1,2].includes(data.schemaVersion))throw new Error('信息库数据版本不受支持。');const accounts=validateAccounts(data.accounts);return {accounts,settings:validateSettings(data.settings),options:validateOptions(data.options,accounts),noteData:validateNoteData(data.schemaVersion===1?undefined:(data.noteData??null)),schemaVersion:data.schemaVersion};}finally{plain.fill(0);}
 }
 export async function decryptAccounts(envelope,key){return (await decryptVault(envelope,key)).accounts;}
 
@@ -138,16 +146,20 @@ export class IndexedVaultStore {
 }
 
 export class VaultSession {
+  #noteData={notes:[],tags:[]};
+  #maintenanceWarning='';
   #store; #key=null; #accounts=[]; #settings=null; #options=null; #envelope=null; #queue=Promise.resolve();
   generation=0;
   constructor(store){this.#store=store;}
+  get noteData(){this.assertUnlocked();return structuredClone(this.#noteData);}
+  get maintenanceWarning(){this.assertUnlocked();return this.#maintenanceWarning;}
   get unlocked(){return this.#key!==null;}
   get accounts(){this.assertUnlocked();return structuredClone(this.#accounts);}
   get settings(){this.assertUnlocked();return {...this.#settings};}
   get options(){this.assertUnlocked();return structuredClone(this.#options);}
   assertUnlocked(){if(!this.#key)throw new LockedError();}
   #check(generation){if(this.generation!==generation)throw new LockedError();}
-  lock(){this.generation++;this.#key=null;this.#accounts=[];this.#settings=null;this.#options=null;this.#envelope=null;}
+  lock(){this.#maintenanceWarning='';this.#noteData={notes:[],tags:[]};this.generation++;this.#key=null;this.#accounts=[];this.#settings=null;this.#options=null;this.#envelope=null;}
   async exists(){return (await this.#store.read())!==null;}
   async create(password){
     if(typeof password!=='string'||password.length<8||password.length>1024)throw new Error('主密码需要 8 至 1024 个字符，建议使用较长的独特口令。');
@@ -158,14 +170,20 @@ export class VaultSession {
     const settings={verifyBeforeActions:false,usesInitialPassword:password===DEFAULT_PASSWORD};
     const options=validateOptions();const envelope=await encryptAccounts([],key,params,settings,options);this.#check(generation);
     await this.#store.write(envelope,null);this.#check(generation);
-    this.#key=key;this.#accounts=[];this.#settings=settings;this.#options=options;this.#envelope=envelope;
+    this.#noteData={notes:[],tags:[]};this.#key=key;this.#accounts=[];this.#settings=settings;this.#options=options;this.#envelope=envelope;
   }
   async unlock(password){
     const generation=this.generation;const raw=await this.#store.read();
     if(!raw)throw new Error('当前设备还没有信息库。');
     const envelope=validateEnvelope(raw);const key=await deriveKey(password,envelope);
     const data=await decryptVault(envelope,key);this.#check(generation);
-    this.#key=key;this.#accounts=data.accounts;this.#settings=data.settings;this.#options=data.options;this.#envelope=envelope;
+    this.#noteData=data.noteData;this.#key=key;this.#accounts=data.accounts;this.#settings=data.settings;this.#options=data.options;this.#envelope=envelope;
+    this.#maintenanceWarning='';
+    try{await this.pruneNotes();}catch(error){
+      if(generation!==this.generation||error instanceof ConflictError||error instanceof LockedError)throw error;
+      // A maintenance write failure must not prevent access to existing accounts or backup export.
+      this.#maintenanceWarning='回收站清理未完成，原数据已保留。可导出备份，稍后重新解锁重试。';
+    }
   }
   async verify(password){
     this.assertUnlocked();const generation=this.generation;
@@ -177,11 +195,60 @@ export class VaultSession {
     this.assertUnlocked();const generation=this.generation;const snapshot=validateAccounts(accounts);
     const work=this.#queue.catch(()=>{}).then(async()=>{
       this.#check(generation);this.assertUnlocked();
-      const envelope=await encryptAccounts(snapshot,this.#key,this.#envelope,this.#settings,this.#options);this.#check(generation);
+      const envelope=await encryptAccounts(snapshot,this.#key,this.#envelope,this.#settings,this.#options,this.#noteData);this.#check(generation);
       try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
       this.#check(generation);this.#envelope=envelope;this.#accounts=snapshot;
     });this.#queue=work;return work;
   }
+
+  // Every module mutation reads the current snapshot inside the same write queue.
+  mutateNotes(change){
+    this.assertUnlocked();const generation=this.generation;
+    const work=this.#queue.catch(()=>{}).then(async()=>{
+      this.#check(generation);this.assertUnlocked();
+      const next=validateNoteData(change(structuredClone(this.#noteData)));
+      if(JSON.stringify(next)===JSON.stringify(this.#noteData))return;
+      const envelope=await encryptAccounts(this.#accounts,this.#key,this.#envelope,this.#settings,this.#options,next);this.#check(generation);
+      try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
+      this.#check(generation);this.#noteData=next;this.#envelope=envelope;
+    });this.#queue=work;return work;
+  }
+  saveNote(note,tagNames){
+    const snapshot=structuredClone(note),names=tagNames===undefined?undefined:[...tagNames];
+    return this.mutateNotes(data=>{
+      if(names){
+        snapshot.tagIds=[...new Set(names.map(name=>name.trim()).filter(Boolean).map(name=>{
+          let tag=data.tags.find(t=>t.name.toLocaleLowerCase()===name.toLocaleLowerCase());
+          if(!tag){tag={id:crypto.randomUUID(),name};data.tags.push(tag);}return tag.id;
+        }))];
+      }
+      const index=data.notes.findIndex(n=>n.id===snapshot.id);
+      if(index<0)data.notes.push(snapshot);else data.notes[index]=snapshot;
+      return data;
+    });
+  }
+  updateNote(id,action){
+    return this.mutateNotes(data=>{
+      const note=data.notes.find(n=>n.id===id);if(!note)throw Error('笔记不存在。');
+      if(action==='purge'){if(!note.deletedAt)throw Error('请先移入回收站。');data.notes=data.notes.filter(n=>n.id!==id);}
+      else if(action==='trash')note.deletedAt=new Date().toISOString();
+      else if(action==='restore')note.deletedAt=null;
+      else if(action==='pin')note.isPinned=!note.isPinned;
+      else if(action==='archive')note.archivedAt=note.archivedAt?null:new Date().toISOString();
+      else throw Error('未知笔记操作。');
+      return data;
+    });
+  }
+  changeNoteTag(id,name){
+    return this.mutateNotes(data=>{
+      const tag=data.tags.find(t=>t.id===id);if(!tag)throw Error('标签不存在。');
+      if(name===null){data.tags=data.tags.filter(t=>t.id!==id);for(const n of data.notes)n.tagIds=n.tagIds.filter(t=>t!==id);}
+      else tag.name=name.trim();return data;
+    });
+  }
+  emptyNoteTrash(){return this.mutateNotes(data=>({...data,notes:data.notes.filter(n=>!n.deletedAt)}));}
+  pruneNotes(){return this.mutateNotes(data=>pruneNoteData(data));}
+
   async exportFile(){
     const generation=this.generation;await this.#queue.catch(()=>{});this.#check(generation);this.assertUnlocked();
     return JSON.stringify(this.#envelope,null,2);
@@ -194,7 +261,7 @@ export class VaultSession {
       this.#check(generation);this.assertUnlocked();
       if(!this.#accounts.some(a=>a.id===id))throw new Error('账号不存在，未删除任何数据。');
       const next=this.#accounts.filter(a=>a.id!==id);
-      const envelope=await encryptAccounts(next,this.#key,this.#envelope,this.#settings,this.#options);this.#check(generation);
+      const envelope=await encryptAccounts(next,this.#key,this.#envelope,this.#settings,this.#options,this.#noteData);this.#check(generation);
       try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
       this.#check(generation);this.#accounts=next;this.#envelope=envelope;
     });this.#queue=work;return work;
@@ -205,7 +272,7 @@ export class VaultSession {
     const work=this.#queue.catch(()=>{}).then(async()=>{
       this.#check(generation);this.assertUnlocked();
       const settings={...this.#settings,verifyBeforeActions};
-      const envelope=await encryptAccounts(this.#accounts,this.#key,this.#envelope,settings,this.#options);this.#check(generation);
+      const envelope=await encryptAccounts(this.#accounts,this.#key,this.#envelope,settings,this.#options,this.#noteData);this.#check(generation);
       try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
       this.#check(generation);this.#settings=settings;this.#envelope=envelope;
     });this.#queue=work;return work;
@@ -230,7 +297,7 @@ export class VaultSession {
         options[kind]=options[kind].filter(item=>item!==name);
       }
       validateOptions(options,accounts);
-      const envelope=await encryptAccounts(accounts,this.#key,this.#envelope,this.#settings,options);this.#check(generation);
+      const envelope=await encryptAccounts(accounts,this.#key,this.#envelope,this.#settings,options,this.#noteData);this.#check(generation);
       try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
       this.#check(generation);this.#options=options;this.#accounts=accounts;this.#envelope=envelope;
     });this.#queue=work;return work;
@@ -244,7 +311,7 @@ export class VaultSession {
       const params={iterations:ITERATIONS,salt:to64(random(16))};
       const key=await deriveKey(password,params);password='';this.#check(generation);
       const settings={...this.#settings,usesInitialPassword};
-      const envelope=await encryptAccounts(this.#accounts,key,params,settings,this.#options);this.#check(generation);
+      const envelope=await encryptAccounts(this.#accounts,key,params,settings,this.#options,this.#noteData);this.#check(generation);
       try{await this.#store.write(envelope,this.#envelope.changeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
       this.#check(generation);this.#key=key;this.#settings=settings;this.#envelope=envelope;
     });this.#queue=work;return work;
@@ -254,7 +321,7 @@ export class VaultSession {
     if(current&&!this.unlocked)throw new Error('请先解锁当前信息库，再导入替换。');
     const parsed=validateEnvelope(envelope);const key=await deriveKey(password,parsed);
     const data=await decryptVault(parsed,key);this.#check(generation);
-    return {generation,expectedChangeId:current?.changeId??null,envelope:parsed,key,accounts:data.accounts,settings:data.settings,options:data.options};
+    return {generation,expectedChangeId:current?.changeId??null,envelope:parsed,key,accounts:data.accounts,settings:data.settings,options:data.options,noteData:data.noteData,schemaVersion:data.schemaVersion};
   }
   async importPrepared(staged){
     const work=this.#queue.catch(()=>{}).then(async()=>{
@@ -262,9 +329,10 @@ export class VaultSession {
       // Existing local vault keeps its own master password. New device adopts file password.
       const key=this.#key??staged.key;const params=this.#envelope??staged.envelope;
       const settings=this.#settings?{...staged.settings,usesInitialPassword:this.#settings.usesInitialPassword}:staged.settings;
-      const envelope=await encryptAccounts(staged.accounts,key,params,settings,staged.options);this.#check(staged.generation);
+      const noteData=pruneNoteData(validateNoteData(staged.noteData));
+      const envelope=await encryptAccounts(staged.accounts,key,params,settings,staged.options,noteData);this.#check(staged.generation);
       try{await this.#store.write(envelope,staged.expectedChangeId);}catch(error){if(error instanceof ConflictError)this.lock();throw error;}
-      this.#check(staged.generation);this.#key=key;this.#accounts=structuredClone(staged.accounts);this.#settings=validateSettings(settings);this.#options=validateOptions(staged.options,staged.accounts);this.#envelope=envelope;
+      this.#check(staged.generation);this.#noteData=noteData;this.#key=key;this.#accounts=structuredClone(staged.accounts);this.#settings=validateSettings(settings);this.#options=validateOptions(staged.options,staged.accounts);this.#envelope=envelope;
     });this.#queue=work;return work;
   }
 }

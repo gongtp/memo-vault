@@ -1,4 +1,7 @@
-import {VaultSession,IndexedVaultStore,parseEncryptedFile,MAX_FILE_BYTES,ConflictError,LockedError,DEFAULT_PASSWORD} from './vault.mjs';
+import {createNotes} from './notes.js';
+import {mountOfflineSettings} from './offline.js';
+import {ConflictError,LockedError} from './vault.mjs';
+import {ModuleVault,parseBackupFile,MAX_BACKUP_BYTES} from './module-vault.mjs';
 import {installAutoLock} from './lifecycle.mjs';
 const paths = {
  trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
@@ -27,13 +30,18 @@ const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name
 function hydrateIcons(){document.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));}
 const escapeHTML = (value='') => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let accounts=[];
-const session=new VaultSession(new IndexedVaultStore());
-let page='accounts',filter='全部',query='',selected=null,sort='recent',editId=null,showPassword=false,pendingImport=null;
+const session=new ModuleVault();
+let page='overview',filter='全部',query='',selected=null,sort='recent',editId=null,showPassword=false,pendingImport=null;
 let existing=false,ready=false,busy=false,authAction=null,authorization=null,revealTimer,authTimer,pendingDelete=null,optionKind='categories',pendingOptionDelete=null;
 const channel=typeof BroadcastChannel==='function'?new BroadcastChannel('memo-vault-updates'):null;
 const content=document.getElementById('page-content');
+const notesSession=new Proxy(session,{get(target,key){if(key==='generation')return target.notesGeneration;if(key==='unlocked')return target.isOpen('notes');if(key==='settings')return {...target.settings,verifyBeforeActions:target.policy.notes&&target.settings.verifyBeforeActions};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
+const notes=createNotes({session:notesSession,root:content,changed,toast,onError:error=>{
+ if(error instanceof ConflictError||!session.isOpen('notes')){lock(errorText(error));return;}
+ toast(errorText(error));
+}});
 const platform = a => `<span class="platform-icon" style="background:${a.color};color:${a.ink}">${a.logo ? icon(a.logo) : escapeHTML(a.letter)}</span>`;
-const banner=()=>`<div class="demo-banner secure-banner">${icon('shield')}<span>${session.settings.usesInitialPassword?'正在使用公开初始密码，请在设置中修改。':'本地与导出文件始终加密。'} · ${session.settings.verifyBeforeActions?'操作前再次验证已开启':'解锁后无需重复验证'}</span><button data-action="explain">安全说明 →</button></div>`;
+const banner=()=>`<div class="demo-banner secure-banner">${icon('shield')}<span>${session.settings.usesInitialPassword?'正在使用公开初始密码，请在设置中修改。':'账号本地与导出始终加密。'} · ${session.settings.verifyBeforeActions?'操作前再次验证已开启':'解锁后无需重复验证'}</span><button data-action="explain">安全说明 →</button></div>`;
 const footer=()=>`<div class="page-footer">${icon('lock')} 把琐碎交给秩序，把空间留给自己。 <span>·</span> Memo Vault</div>`;
 function stats(){return `<div class="stats">${[
  ['key','全部账号',accounts.length,'个','重要账号，一个地方收好'],
@@ -41,18 +49,28 @@ function stats(){return `<div class="stats">${[
  ['folder','账号分类',new Set(accounts.map(a=>a.category)).size,'类','各有归属，查找更轻松']
  ].map(([i,l,n,u,d])=>`<div class="stat"><div class="stat-label">${icon(i)}${l}</div><div class="stat-number">${n}<small>${u}</small></div><div class="stat-foot">${d}</div><div class="stat-decoration">${icon(i)}</div></div>`).join('')}</div>`;}
 function render(){
- if(!session.unlocked)return;
- document.getElementById('nav-count').textContent=accounts.length;
- document.getElementById('crumb').textContent=({accounts:'账号管理',overview:'空间概览',settings:'设置与备份'})[page];
+ parkGate();
+ accounts=session.isOpen('accounts')?session.accounts:[];
+ document.getElementById('nav-count').textContent=session.isOpen('accounts')?accounts.length:'';
+ document.getElementById('crumb').textContent=({notes:'日常笔记',accounts:'账号管理',overview:'空间概览',settings:'设置与备份'})[page];
  document.querySelectorAll('[data-page]').forEach(el=>{el.classList.toggle('active',el.dataset.page===page);el.setAttribute('aria-current',el.dataset.page===page?'page':'false');});
+ if(['accounts','notes'].includes(page)&&!session.isOpen(page)){
+  content.replaceChildren();$('gate').hidden=false;content.append($('gate'));void refreshGate();return;
+ }
  if(page==='accounts') renderAccounts();
  if(page==='overview') renderOverview();
  if(page==='settings') renderSettings();
+ if(page==='notes') notes.render();
 }
 function renderAccounts(){
- content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">A PLACE FOR YOUR DIGITAL LIFE</span><h1>账号管理<span style="color:#a4a4c9">.</span></h1><p>收好每一个数字身份，让生活少一点忘记。</p></div><button class="button primary" data-action="add">${icon('plus')}添加账号</button></div><div class="accounts-layout"><section class="list-panel" aria-label="账号列表"><div class="list-toolbar"><div class="list-title"><h2>我的账号<span id="list-count"></span></h2><select class="sort-select" id="sort" aria-label="账号排序"><option value="recent">最近更新 ↓</option><option value="name">名称排序 ↓</option></select></div><div class="search-box">${icon('search')}<input id="search" type="search" aria-label="搜索账号" placeholder="搜索平台、账号或备注…" value="${escapeHTML(query)}"><kbd>⌘ / Ctrl K</kbd></div><div class="filters">${['全部','常用','开发工具','日常生活','工作效率','社交娱乐'].map(f=>`<button class="filter ${filter===f?'active':''}" data-filter="${f}" aria-pressed="${filter===f}">${f==='常用'?'☆ ':''}${f}</button>`).join('')}</div></div><div class="table-head"><span>平台 / 登录账号</span><span>分类</span><span>常用</span></div><div id="account-rows"></div><div class="list-footer"><span id="result-count"></span><span>${icon('clock')}仅本次会话</span></div></section><aside class="detail-panel" id="detail" aria-label="账号详情"></aside></div>${footer()}`;
+ content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">A PLACE FOR YOUR DIGITAL LIFE</span><h1>账号管理</h1><p>收好每一个数字身份，让生活少一点忘记。</p></div><button class="button primary" data-action="add">${icon('plus')}添加账号</button></div><div class="accounts-layout"><section class="list-panel" aria-label="账号列表"><div class="list-toolbar"><div class="list-title"><h2>我的账号<span id="list-count"></span></h2><select class="sort-select" id="sort" aria-label="账号排序"><option value="recent">最近更新 ↓</option><option value="name">名称排序 ↓</option></select></div><div class="search-box">${icon('search')}<input id="search" type="search" aria-label="搜索账号" placeholder="搜索平台、账号或备注…" value="${escapeHTML(query)}"><kbd>⌘ / Ctrl K</kbd></div><div class="filters account-filters"></div></div><div class="table-head"><span>平台 / 登录账号</span><span>分类</span><span>常用</span></div><div id="account-rows"></div><div class="list-footer"><span id="result-count"></span><span>${icon('clock')}仅本次会话</span></div></section><aside class="detail-panel" id="detail" aria-label="账号详情"></aside></div>${footer()}`;
  document.querySelector('.list-footer span:last-child').innerHTML=`${icon('shield')}本地已加密`;
- document.querySelector('.filters').innerHTML=[['全部','全部'],['常用','☆ 常用'],...session.options.categories.map(name=>[`category:${name}`,name])].map(([key,label])=>`<button class="filter ${filter===key?'active':''}" data-filter="${escapeHTML(key)}" aria-pressed="${filter===key}">${escapeHTML(label)}</button>`).join('');
+ document.querySelector('.account-filters').innerHTML=[['全部','全部'],['常用','☆ 常用']].map(([key,label])=>`<button class="filter ${filter===key?'active':''}" data-filter="${escapeHTML(key)}" aria-pressed="${filter===key}">${escapeHTML(label)}</button>`).join('');
+ const categorySelect=document.createElement('select');categorySelect.id='account-category-filter';categorySelect.className='account-category-filter';categorySelect.setAttribute('aria-label','按账号分类筛选');
+ categorySelect.innerHTML='<option value="全部">选择分类</option>'+session.options.categories.map(name=>`<option value="${escapeHTML('category:'+name)}">${escapeHTML(name)}</option>`).join('');
+ categorySelect.value=filter.startsWith('category:')?filter:'全部';categorySelect.classList.toggle('active',filter.startsWith('category:'));
+ categorySelect.onchange=e=>{hidePassword();filter=e.target.value;renderAccounts();document.getElementById('account-category-filter').focus();};
+ document.querySelector('.account-filters').append(categorySelect);
  document.getElementById('sort').value=sort;
  document.getElementById('search').oninput=e=>{showPassword=false;clearTimeout(revealTimer);query=e.target.value;renderRows();};
  document.getElementById('sort').onchange=e=>{hidePassword();sort=e.target.value;renderRows();};
@@ -73,11 +91,44 @@ function renderDetail(){
  const safeUrl=(()=>{try{const u=new URL(a.url);return ['https:','http:'].includes(u.protocol)?u.href:'';}catch{return '';}})();
  detail.innerHTML=`<div class="detail-topline"><span class="detail-heading">账号详情</span><button class="mobile-back" data-action="back">${icon('back')}账号列表</button><div class="detail-actions"><button class="icon-button" data-action="favorite" aria-label="${a.favorite?'取消常用':'设为常用'}" title="${a.favorite?'取消常用':'设为常用'}"><span class="star-icon ${a.favorite?'on':''}">${icon('star')}</span></button><button class="icon-button" data-action="edit" aria-label="编辑账号" title="编辑账号">${icon('edit')}</button><button class="icon-button delete-action" data-action="delete" aria-label="删除账号" title="删除账号">${icon('trash')}</button></div></div><div class="detail-hero">${platform(a)}<h2>${escapeHTML(a.name)}</h2><p>${safeUrl?escapeHTML(new URL(safeUrl).hostname):'自定义账号'}</p><span class="category-tag">${escapeHTML(a.category||'未分类')}</span></div><div class="detail-fields"><div class="field"><span class="field-label">登录账号</span><div class="field-value"><span>${escapeHTML(a.username)}</span><button class="icon-button" data-copy="username" aria-label="复制登录账号">${icon('copy')}</button></div></div><div class="field"><span class="field-label">登录方式</span><div class="field-value"><span>${escapeHTML(a.method||'未设置')}</span></div></div><div class="field"><span class="field-label">密码</span><div class="field-value"><span class="${a.password&&!showPassword?'password-text':''}">${a.password?(showPassword?escapeHTML(a.password):'••••••••••••'):'无需保存密码'}</span>${a.password?`<div class="field-buttons"><button class="icon-button" data-action="reveal" aria-label="${showPassword?'隐藏':'显示'}密码" aria-pressed="${showPassword}">${icon('eye')}</button><button class="icon-button" data-copy="password" aria-label="复制密码">${icon('copy')}</button></div>`:''}</div></div><div class="field"><span class="field-label">网站地址</span><div class="field-value">${safeUrl?`<a href="${escapeHTML(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(new URL(safeUrl).hostname)}${icon('arrow')}</a>`:'<span>未填写</span>'}</div></div><div class="field"><span class="field-label">备注</span><div class="note-box">${escapeHTML(a.note||'暂无备注')}</div></div></div><div class="detail-footer"><span>最近更新</span><span>${escapeHTML(a.date)}</span></div>`;
 }
-function renderOverview(){content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">YOUR PERSONAL WORKSPACE</span><h1>生活有序，心有余地。</h1><p>这里是你的私人信息空间，从收好账号开始。</p></div></div>${banner()}${stats()}<div class="settings-grid"><section class="setting-card">${icon('key')}<h2>重要的账号，随时找得到</h2><p>按平台、分类和备注快速查找数字身份。常用账号可以收藏，跨平台登录方式也能一并记录。</p><button class="button primary" data-page="accounts">进入账号管理 →</button></section><section class="setting-card">${icon('grid')}<h2>留出位置，慢慢生长</h2><div class="roadmap">${icon('key')}<span>账号管理<small>账号、登录方式、分类与备注</small></span><span>本期设计</span></div><div class="roadmap">${icon('note')}<span>安全笔记<small>值得妥善收好的私人记录</small></span><span>后续规划</span></div><div class="roadmap">${icon('card')}<span>订阅管理<small>费用、周期与到期提醒</small></span><span>后续规划</span></div><div class="roadmap">${icon('folder')}<span>个人资料<small>让常用资料各有归处</small></span><span>后续规划</span></div></section></div>${footer()}`;}
-function renderSettings(){content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">MAKE IT YOUR OWN</span><h1>设置与备份</h1><p>程序在线发布，数据随你迁移。</p></div></div>${banner()}<div class="settings-grid"><section class="setting-card">${icon('shield')}<h2>按你的习惯，选择验证方式</h2><label class="setting-toggle"><span>操作前再次验证<small>查看、复制、编辑及删除账号时验证主密码</small></span><input id="verify-actions" type="checkbox" role="switch" ${session.settings.verifyBeforeActions?'checked':''}></label><p>${session.settings.verifyBeforeActions?'已开启：每次敏感操作前重新验证。':'已关闭：解锁一次后可以直接操作。'}本地数据和导出文件始终加密，开关不会关闭加密。</p><p>切后台立即锁定，闲置 5 分钟自动锁定。显示出的密码 30 秒后隐藏。</p><button class="button secondary" data-action="lock">${icon('lock')}立即锁定</button></section><section class="setting-card">${icon('key')}<h2>修改主密码</h2><p>${session.settings.usesInitialPassword?'当前使用公开初始密码 a12345678，请在录入个人信息前修改。':'已设置个人主密码。公开初始密码不能解锁已修改的信息库。'}</p><p>新主密码只输入一次，至少 8 个字符。修改后本设备的数据会重新加密。以前导出的文件仍使用当时的密码，请重新导出备份。</p><button class="button primary" data-action="change-password">${icon('key')}修改主密码</button></section><section class="setting-card">${icon('download')}<h2>导出加密文件，换设备继续</h2><p>电脑导出 → 传到手机“文件” → 手机导入并输入文件的主密码。无论是否开启操作验证，导出的都只有密文。</p><div class="backup-actions"><button class="button primary" data-action="import">${icon('folder')}导入加密数据</button><button class="button secondary" data-action="export">${icon('download')}导出加密数据</button></div><p>导入会预览数量并确认整库替换，不自动合并或同步。已有库保留本设备主密码，新设备使用文件主密码；操作验证设置随文件迁移。</p></section><section class="setting-card">${icon('note')}<h2>你的数据，由你保管</h2><p>发布到 GitHub Pages 的只有程序和公开的初始密码，不附带个人账号数据。首次为空库，测试数据单独导入。</p><p>网站数据被清理后，需要备份文件及其密码恢复。尚未发布 Pages 或启用离线安装。</p><button class="button secondary" data-action="explain">查看安全说明</button></section></div>${footer()}`;}
-
+function renderOverview(){content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">YOUR PERSONAL WORKSPACE</span><h1>生活有序，心有余地。</h1><p>这里是你的私人信息空间，收好账号，也记下生活。</p></div></div>${session.isOpen('accounts')?stats():'<p class="gate-hint">账号管理已锁定，进入时输入主密码。</p>'}<div class="settings-grid"><section class="setting-card">${icon('key')}<h2>重要的账号，随时找得到</h2><p>按平台、分类和备注快速查找数字身份。常用账号可以收藏，跨平台登录方式也能一并记录。</p><button class="button primary" data-page="accounts">进入账号管理 →</button></section><section class="setting-card">${icon('grid')}<h2>给日常留一点空间</h2><p>生活琐事、灵感和清单，都可以随手记下。</p><button class="button primary" data-page="notes" data-new-note>＋ 写一条笔记</button><div class="roadmap">${icon('key')}<span>账号管理<small>账号、登录方式、分类与备注</small></span><span>本期设计</span></div><div class="roadmap">${icon('note')}<span>日常笔记<small>连续正文、标签与自动保存</small></span><span>已可使用</span></div><div class="roadmap">${icon('card')}<span>订阅管理<small>费用、周期与到期提醒</small></span><span>后续规划</span></div><div class="roadmap">${icon('folder')}<span>个人资料<small>让常用资料各有归处</small></span><span>后续规划</span></div></section></div>${footer()}`;}
+function renderSettings(){
+ const policy=session.policy,authenticated=session.authenticated;
+ content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">MAKE IT YOUR OWN</span><h1>设置与备份</h1><p>按模块选择保护，共用一个主密码。</p></div></div><div class="settings-grid"><section class="setting-card">${icon('shield')}<h2>需要解锁的模块</h2>${[['accounts','账号管理','默认开启，账号数据始终加密。关闭后本设备会保存免解锁密钥。'],['notes','日常笔记','默认关闭，笔记直接保存在本地。开启后加密保存并验证主密码。']].map(([key,label,note])=>`<label class="setting-toggle"><span>${label}<small>${note}</small></span><input type="checkbox" role="switch" data-module-lock="${key}" ${policy[key]?'checked':''} ${ready?'':'disabled'}></label>`).join('')}<p>调整开关需要验证主密码。切后台或闲置 5 分钟后，受保护模块重新锁定，其他模块仍可使用。</p>${session.legacy?'<p class="inline-error">旧信息库需要先验证一次主密码，才能迁移笔记和启用模块设置。</p>':''}<div class="module-lock-actions"><button class="button secondary" data-action="unlock-settings">${icon('key')}${authenticated?'验证主密码':'验证主密码管理设置'}</button><button class="button secondary" data-action="lock">锁定受保护模块</button></div></section><section class="setting-card">${icon('shield')}<h2>操作前再次验证</h2><label class="setting-toggle"><span>敏感操作验证<small>账号敏感操作和受保护笔记的操作前再次验证</small></span><input id="verify-actions" type="checkbox" role="switch" ${session.settings.verifyBeforeActions?'checked':''} ${authenticated?'':'disabled'}></label><p>模块解锁与操作验证分别控制。未锁定的笔记不会要求密码；账号本地和导出始终加密；导出笔记为普通 JSON。</p><p>${authenticated?'密码显示 30 秒后自动隐藏。':'验证主密码后可查看和调整此设置。'}</p></section><section class="setting-card">${icon('key')}<h2>修改统一主密码</h2><p>账号和开启保护的笔记共用一个主密码。首次使用的初始密码为 a12345678。</p><p>新密码只输入一次，至少 8 个字符。修改后重新加密受保护数据；旧备份仍使用导出时的密码。</p><button class="button primary" data-action="change-password">修改主密码</button></section><section class="setting-card">${icon('download')}<h2>导入与导出</h2><p>导出一个 JSON 文件：账号部分加密，文档和标签为普通 JSON，可直接查看。即使笔记开启本地锁定，导出时也不加密。</p><div class="backup-actions"><button class="button primary" data-action="import">导入 JSON 备份</button><button class="button secondary" data-action="export">导出 JSON 备份</button></div><p>导入整库替换，不自动合并。支持新 JSON 和旧整库加密备份，文件最多 32 MB。保留本设备的主密码和模块锁定开关。</p></section></div>${footer()}`;
+ mountOfflineSettings(content.querySelector(".settings-grid"));
+}
 let toastTimer,operation=0,pendingFile=null;
 const $=id=>document.getElementById(id);
+const masterDialog=document.createElement('dialog');
+masterDialog.setAttribute('aria-labelledby','module-auth-title');
+masterDialog.innerHTML='<form id="module-auth-form"><div class="dialog-heading"><h2 id="module-auth-title">验证统一主密码</h2><button class="icon-button" type="button" id="cancel-module-auth" aria-label="取消">×</button></div><p class="form-note">管理保护设置、修改主密码及整库备份前验证身份。</p><label>主密码<input type="password" id="module-auth-password" autocomplete="current-password" maxlength="1024" required></label><p class="inline-error" id="module-auth-error" role="alert"></p><button type="submit" class="button primary">验证并继续</button></form>';
+document.body.append(masterDialog);
+let masterRequest=null;
+function cancelMaster(){if(masterRequest&&busy)session.lock();masterRequest?.resolve(false);masterRequest=null;$('module-auth-form').reset();$('module-auth-error').textContent='';masterDialog.close();}
+$('cancel-module-auth').onclick=cancelMaster;masterDialog.addEventListener('cancel',cancelMaster);
+async function requireMaster(work,force=false){
+ if(!ready){toast('本地信息库尚未就绪。');return false;}
+ if(session.authenticated&&!force){await perform(()=>work(''));return true;}
+ cancelMaster();$('module-auth-error').textContent='';
+ return new Promise(resolve=>{masterRequest={work,resolve,generation:session.generation};masterDialog.showModal();$('module-auth-password').focus();});
+}
+$('module-auth-form').onsubmit=e=>{
+ e.preventDefault();const request=masterRequest;let password=$('module-auth-password').value;$('module-auth-password').value='';$('module-auth-error').textContent='';
+ void perform(async()=>{
+  try{
+   if(!request||request.generation!==session.generation)throw new LockedError();
+   const migrating=session.legacy;await session.unlock(password,'settings');if(migrating)changed();
+   if(masterRequest!==request)throw new LockedError();accounts=session.accounts;autoLock.resume();
+   masterDialog.close();await request.work(password);request.resolve(true);masterRequest=null;
+  }catch(error){if(masterRequest===request&&!masterDialog.open)masterDialog.showModal();throw error;}
+  finally{password='';}
+ },'module-auth-error');
+};
+function parkGate(){const gate=$('gate');if(gate.parentElement!==document.body)document.body.append(gate);gate.hidden=true;}
+async function reloadModules(message=''){
+ ready=false;lock(message);notes.reset();session.lock();
+ try{await session.load();ready=true;render();if(message)toast(message);}catch(error){content.textContent=errorText(error);}
+}
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('visible'),4000);}
 function errorText(error){return error instanceof Error?error.message:'操作失败，请重试。';}
 function hidePassword(){showPassword=false;clearTimeout(revealTimer);renderDetail();}
@@ -86,6 +137,8 @@ function syncButtons(){
  $('gate-submit').disabled=busy||!ready;
  $('confirm-import').disabled=busy||!pendingImport||!$('import-confirm').checked;
  if($('verify-actions'))$('verify-actions').disabled=busy;
+ if($('verify-actions'))$('verify-actions').disabled=busy||!session.authenticated;
+ document.querySelectorAll('[data-module-lock]').forEach(el=>el.disabled=busy||!ready);
  $('confirm-delete').disabled=busy||!pendingDelete;
  $('cancel-delete').disabled=busy;$('close-delete').disabled=busy;
  document.querySelectorAll('#options-dialog button,#options-dialog input,#options-dialog select').forEach(el=>el.disabled=busy);
@@ -95,31 +148,28 @@ async function perform(work,errorTarget=null){
  busy=true;const id=++operation;syncButtons();
  try{await work();}
  catch(error){
-  if(error instanceof ConflictError||(!session.unlocked&&document.body.classList.contains('is-locked')===false))lock(errorText(error));
-  if(error instanceof LockedError){if(!session.unlocked)void refreshGate();return;}
+  if(error instanceof ConflictError)void reloadModules(errorText(error));
+  if(error instanceof LockedError){render();return;}
   if(errorTarget)$(errorTarget).textContent=errorText(error);else toast(errorText(error));
  }
  finally{if(operation===id){busy=false;syncButtons();}}
 }
 async function refreshGate(){
- const generation=session.generation;
  try{
-  if(!globalThis.isSecureContext||!crypto.subtle)throw new Error('需要 HTTPS 或 localhost 才能使用加密功能。');
-  const found=await session.exists();if(generation!==session.generation)return;
-  existing=found;ready=true;
-  $('gate-title').textContent='解锁你的信息库';
-  $('gate-note').textContent=existing?'输入当前主密码，解锁本设备的加密数据。':'首次使用的初始密码为 a12345678，进入后可在设置中修改。';
+  $('gate-title').textContent=page==='notes'?'解锁日常笔记':'解锁账号管理';
+  $('gate-note').textContent=session.legacy?'旧信息库需要验证一次主密码，迁移后笔记默认无需解锁。':'输入统一主密码进入此模块。首次使用的初始密码为 a12345678。';
   $('master-password').disabled=false;
   $('master-password').autocomplete='current-password';
   $('master-password').minLength=1;
-  $('gate-submit').textContent='解锁信息库';syncButtons();
+  $('gate-submit').textContent='解锁模块';syncButtons();
  }catch(error){ready=false;$('gate-title').textContent='无法读取本地信息库';$('gate-error').textContent=errorText(error);syncButtons();}
 }
 function enterVault(){
  if(document.hidden){lock();return;}
- accounts=session.accounts;selected=accounts[0]?.id??null;existing=true;
+ accounts=session.isOpen('accounts')?session.accounts:[];selected=accounts[0]?.id??null;existing=true;
  $('gate-form').reset();$('gate-error').textContent='';document.body.classList.remove('is-locked');
  render();autoLock.resume();navigator.storage?.persist?.().catch(()=>{});
+ if(session.maintenanceWarning)toast(session.maintenanceWarning);
 }
 function clearAuth(){
  authAction=null;authorization=null;clearTimeout(authTimer);$('reauth-form').reset();
@@ -133,13 +183,13 @@ function clearImport(){
 }
 function closeImport(){clearImport();$('import-dialog').close();}
 function lock(message='已锁定。请输入主密码继续。'){
- session.lock();operation++;busy=false;accounts=[];query='';selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
- clearTimeout(revealTimer);clearAuth();clearImport();
- for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
+ const keepNotes=page==='notes'&&!session.policy.notes&&notes.active;
+ session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];query='';selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
+ clearTimeout(revealTimer);clearAuth();clearImport();cancelMaster();
+ for(const dialog of document.querySelectorAll('dialog[open]'))if(!keepNotes||!dialog.classList.contains('notes-dialog'))dialog.close();
  $('account-form').reset();$('account-form').elements.category.replaceChildren();$('account-form').elements.method.replaceChildren();$('gate-form').reset();$('change-password-form').reset();$('change-password-error').textContent='';$('save-error').textContent='';
- content.replaceChildren();$('nav-count').textContent='';$('toast').textContent='';$('toast').classList.remove('visible');
- document.body.classList.add('is-locked');$('gate-error').textContent=message;
- ready=false;syncButtons();void refreshGate();
+ $('nav-count').textContent='';$('toast').textContent='';$('toast').classList.remove('visible');
+ if(!keepNotes)render();$('gate-error').textContent=message;syncButtons();
 }
 function changed(){channel?.postMessage('changed');}
 function openForm(edit=false){
@@ -164,7 +214,7 @@ function requestVerification(type){
  $('reauth-note').textContent=({reveal:'验证后显示这一个账号的密码，30 秒后自动隐藏。',copy:'验证后再次点击“复制密码”，复制权限仅限这一次操作、30 秒内有效。',edit:'编辑可能显示现有密码，请先验证主密码。',delete:'验证后将显示删除确认，请核对要删除的账号。',changePassword:'验证当前主密码后设置新的主密码。'})[type];
  $('reauth-dialog').showModal();$('reauth-password').focus();
 }
-function explain(){toast('操作验证可在设置中开关；本地和导出文件始终加密；切后台或闲置 5 分钟自动锁定。');}
+function explain(){toast('设置中选择需要解锁的模块，共用一个主密码。账号本地与导出始终加密；笔记导出为普通 JSON，本地保护单独设置。');}
 function copyPassword(id){
  if(!session.unlocked||document.hidden)return;
  const account=accounts.find(a=>a.id===id);if(!account)return;
@@ -189,20 +239,19 @@ function runAccountAction(type){
  if(type==='reveal'){showPassword=true;renderDetail();revealTimer=setTimeout(hidePassword,30000);}
 }
 async function exportFile(){
- if(!session.unlocked)throw new LockedError();
- const generation=session.generation;const text=await session.exportFile();
+ if(!session.authenticated)throw new LockedError();
+ await notes.flush();const generation=session.generation;const text=await session.exportFile();
  if(generation!==session.generation||document.hidden)throw new LockedError();
  const blob=new Blob([text],{type:'application/json'});const url=URL.createObjectURL(blob);const link=document.createElement('a');
- link.href=url;link.download=`memo-vault-encrypted-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
- toast('已发起加密文件导出，请妥善保存文件与主密码。');
+ link.href=url;link.download=`memo-vault-backup-${new Date().toISOString().replace(/[:.]/g,'-')}.json`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ toast('已发起 JSON 备份导出：账号已加密，笔记为普通 JSON。');
 }
 $('gate-form').onsubmit=e=>{
  e.preventDefault();let password=$('master-password').value;
  $('gate-form').reset();$('gate-error').textContent='';
  void perform(async()=>{
   if(!ready)throw new Error('本地存储尚未就绪。');
-  if(!existing&&password!==DEFAULT_PASSWORD)throw new Error('首次使用请输入初始密码 a12345678，进入后可修改。');
-  try{if(existing)await session.unlock(password);else{await session.create(password);changed();}}
+  try{const migrating=session.legacy;await session.unlock(password,page);if(migrating)changed();}
   finally{password='';}
   enterVault();
  },'gate-error');
@@ -234,17 +283,23 @@ $('verified-copy').onclick=()=>{
 $('cancel-reauth').onclick=()=>{clearAuth();$('reauth-dialog').close();};
 $('reauth-dialog').addEventListener('cancel',clearAuth);
 document.addEventListener('change',e=>{
+ const module=e.target.dataset.moduleLock;
+ if(module){
+  const value=e.target.checked;e.target.checked=session.policy[module];
+  if(busy)return;
+  void requireMaster(async password=>{await session.setModuleLock(module,value,password);changed();render();toast('模块锁定设置已保存。');},true);return;
+ }
  if(e.target.id!=='verify-actions')return;
  const value=e.target.checked;
- if(busy||!session.unlocked){e.target.checked=session.unlocked&&session.settings.verifyBeforeActions;return;}
+ if(busy||!session.authenticated){e.target.checked=session.settings.verifyBeforeActions;return;}
  hidePassword();clearAuth();
- void perform(async()=>{await session.updateSettings(value);changed();renderSettings();toast(value?'已开启操作前再次验证。':'已关闭重复验证，数据与导出仍然加密。');}).then(()=>{if(session.unlocked&&page==='settings')renderSettings();});
+ void perform(async()=>{await session.updateSettings(value);changed();renderSettings();toast(value?'已开启操作前再次验证。':'已关闭重复验证，账号仍然加密，笔记按本地锁定设置保存。');}).then(()=>{if(session.unlocked&&page==='settings')renderSettings();});
 });
 $('change-password-form').onsubmit=e=>{
  e.preventDefault();let password=$('new-master-password').value;$('new-master-password').value='';$('change-password-error').textContent='';
  void perform(async()=>{
   try{await session.changePassword(password);}finally{password='';}
-  hidePassword();clearAuth();changed();$('change-password-form').reset();$('change-password-dialog').close();render();toast('主密码已修改，请用新密码重新导出加密备份。');
+  hidePassword();clearAuth();changed();$('change-password-form').reset();$('change-password-dialog').close();render();toast('主密码已修改，请用新密码重新导出 JSON 备份。');
  },'change-password-error');
 };
 $('cancel-change-password').onclick=()=>{$('change-password-form').reset();$('change-password-dialog').close();};
@@ -284,7 +339,7 @@ $('option-add-form').onsubmit=e=>{
  $('option-error').textContent='';
  void perform(async()=>{await session.addOption(kind,name);$('option-add-form').reset();refreshOptions({[kind==='categories'?'category':'method']:name});toast('已添加选项。');},'option-error');
 };
-document.addEventListener('click',e=>{
+document.addEventListener('click',async e=>{
  const manage=e.target.closest('[data-manage-options]');if(manage){openOptionManager(manage.dataset.manageOptions);return;}
  const kind=e.target.closest('[data-option-kind]');if(kind&&!busy){optionKind=kind.dataset.optionKind;renderOptionManager();$('option-error').textContent='';return;}
  const remove=e.target.closest('[data-remove-option]');if(!remove||busy||!session.unlocked)return;
@@ -312,16 +367,24 @@ $('confirm-delete').onclick=()=>void perform(async()=>{
  accounts=session.accounts;selected=null;hidePassword();clearDelete();$('delete-dialog').close();changed();render();toast('账号已删除，已加密保存。');
 },'delete-error');
 
-document.addEventListener('click',e=>{
+document.addEventListener('click',async e=>{
  const action=e.target.closest('[data-action]')?.dataset.action;
+ if(busy&&action!=='lock')return;
+ const nav=e.target.closest('[data-page]');if(nav){
+  if(!await notes.leave())return;
+  hidePassword();page=nav.dataset.page;render();if(nav.hasAttribute('data-new-note')&&session.isOpen('notes'))void notes.new();window.scrollTo(0,0);return;
+ }
+ if(action==='lock'){lock();return;}
+ if(action==='explain'){explain();return;}
+ if(action==='unlock-settings'){void requireMaster(async()=>{render();},true);return;}
+ if(action==='change-password'){void requireMaster(async()=>runAccountAction('changePassword'));return;}
+ if(action==='export'){void requireMaster(exportFile);return;}
  if(action==='import'){
-  if(busy||!ready)return;
-  if(existing&&!session.unlocked){toast('请先解锁当前信息库，再导入替换。');return;}
-  hidePassword();$('import-file').click();return;
+  if(!ready)return;
+  if(notes.active&&!await notes.leave())return;
+  void requireMaster(async()=>{hidePassword();$('import-file').click();});return;
  }
  if(!session.unlocked)return;
- if(busy&&action!=='lock')return;
- const nav=e.target.closest('[data-page]');if(nav){hidePassword();page=nav.dataset.page;render();window.scrollTo(0,0);return;}
  const f=e.target.closest('[data-filter]');if(f){hidePassword();filter=f.dataset.filter;renderAccounts();return;}
  const row=e.target.closest('[data-account]');if(row){hidePassword();selected=Number(row.dataset.account);renderRows();document.querySelector('.accounts-layout').classList.add('show-detail');window.scrollTo(0,0);return;}
  const copy=e.target.closest('[data-copy]');if(copy){
@@ -349,8 +412,8 @@ $('import-file').onchange=async e=>{
  const file=e.target.files[0];e.target.value='';if(!file)return;
  const generation=session.generation;
  try{
-  if(file.size>MAX_FILE_BYTES)throw new Error('加密文件不能超过 8 MB。');
-  const parsed=parseEncryptedFile(await file.text());if(generation!==session.generation)return;
+  if(file.size>MAX_BACKUP_BYTES)throw new Error('备份文件不能超过 32 MB。');
+  const parsed=parseBackupFile(await file.text());if(generation!==session.generation)return;
   clearImport();pendingFile=parsed;$('import-dialog').showModal();
  }catch(error){toast(errorText(error));}
 };
@@ -358,11 +421,12 @@ $('import-decrypt-form').onsubmit=e=>{
  e.preventDefault();let password=$('import-password').value;$('import-password').value='';$('import-error').textContent='';
  const file=pendingFile;
  void perform(async()=>{
-  if(!file)throw new Error('请重新选择加密文件。');
+  if(!file)throw new Error('请重新选择备份 JSON。');
   let staged;try{staged=await session.stageImport(file,password);}finally{password='';}
   if(file!==pendingFile||document.hidden)throw new LockedError();
   pendingImport=staged;$('import-decrypt-form').hidden=true;$('import-preview').hidden=false;
   $('import-summary').textContent=`即将导入 ${staged.accounts.length} 个账号。${session.unlocked?`替换本设备当前 ${accounts.length} 个账号。`:'在本设备创建信息库。'}`;
+  $('import-summary').textContent+=` 文档：${staged.noteData.notes.length} 篇。${staged.schemaVersion===1?'这是旧版备份，不含文档。':''}${staged.noteData.notes.some(n=>n.deletedAt||n.archivedAt)?'旧归档和回收站内容将恢复为普通文档。':''} 将替换本机全部文档，不会合并。`;
   $('import-policy').textContent=session.unlocked?'整库替换，不自动合并。当前设备主密码保持不变；文件仍使用导出时的主密码。':'导入后使用这份文件的主密码解锁。不会更改原设备数据。';
   $('export-before-import').hidden=!session.unlocked;$('import-confirm').checked=false;syncButtons();
  },'import-error');
@@ -372,7 +436,7 @@ $('import-confirm').onchange=syncButtons;
 $('confirm-import').onclick=()=>void perform(async()=>{
  if(!pendingImport||!$('import-confirm').checked)return;
  const staged=pendingImport;await session.importPrepared(staged);changed();closeImport();
- page='accounts';filter='全部';query='';enterVault();toast('加密数据已导入并保存到本设备。');
+ page='accounts';filter='全部';query='';enterVault();toast('备份已导入并保存到本设备。');
 },'import-error');
 $('account-form').onsubmit=e=>{
  e.preventDefault();if(busy||!session.unlocked)return;
@@ -389,9 +453,13 @@ const closeAccount=()=>{$('account-form').reset();$('account-dialog').close();ed
 for(const id of ['close-form','cancel-form'])$(id).onclick=closeAccount;
 $('account-dialog').addEventListener('cancel',()=>{$('account-form').reset();editId=null;});
 $('help').onclick=explain;
-const autoLock=installAutoLock({document,window,lock,isUnlocked:()=>session.unlocked});
-channel?.addEventListener('message',()=>lock('另一页面已修改信息库，请重新解锁。'));
-document.addEventListener('keydown',e=>{
- if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'&&session.unlocked){e.preventDefault();if(document.querySelector('dialog[open]'))return;if(page!=='accounts'){page='accounts';render();}$('search').focus();}
+const autoLock=installAutoLock({document,window,lock,isUnlocked:()=>session.hasProtectedAccess});
+channel?.addEventListener('message',()=>void reloadModules('另一页面已修改信息库，已刷新本地数据并锁定受保护模块。'));
+document.addEventListener('keydown',async e=>{
+ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();if(document.querySelector('dialog[open]'))return;if(page==='notes'&&session.isOpen('notes')){if(!await notes.leave())return;render();document.getElementById('note-search').focus();return;}if(page!=='accounts'){page='accounts';render();}$('search')?.focus();}
 });
-hydrateIcons();void refreshGate();
+hydrateIcons();parkGate();
+void (async()=>{try{
+ if(!globalThis.isSecureContext||!crypto.subtle)throw Error('需要 HTTPS 或 localhost 才能使用加密功能。');
+ await session.load();ready=true;existing=true;document.body.classList.remove('is-locked');render();navigator.storage?.persist?.().catch(()=>{});
+}catch(error){document.body.classList.remove('is-locked');content.textContent=errorText(error);}})();
