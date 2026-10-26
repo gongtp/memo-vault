@@ -7,6 +7,6 @@
   "scripts": {
     "dev": "node scripts/preview.mjs",
     "build": "node scripts/build.mjs",
-    "check": "node --check app.js && node --check notes.js && node --check notes-model.mjs && node --check vault.mjs && node --check module-vault.mjs && node --check offline.js && node --check sw.js && node --test tests/*.test.mjs"
+    "check": "node --check app.js && node --check notes.js && node --check notes-model.mjs && node --check table-model.mjs && node --check vault.mjs && node --check module-vault.mjs && node --check offline.js && node --check sw.js && node --test tests/*.test.mjs"
   }
 }

@@ -9,8 +9,8 @@ export const MAX_BACKUP_BYTES=32*1024*1024;
 const backupEncoder=new TextEncoder();
 export function validateBackup(value){
   if(value?.type==='memo-vault-encrypted')return validateEnvelope(value);
-  if(value?.type!=='memo-vault-backup'||value.version!==1||!value.modules||Object.keys(value.modules).length!==2||!Object.hasOwn(value.modules,'accounts')||!Object.hasOwn(value.modules,'notes'))throw Error('请选择 Memo Vault 备份 JSON，不支持此文件格式或版本。');
-  return {type:'memo-vault-backup',version:1,modules:{accounts:validateEnvelope(value.modules.accounts),notes:validateNoteData(value.modules.notes??null)}};
+  if(value?.type!=='memo-vault-backup'||![1,2,3].includes(value.version)||!value.modules||Object.keys(value.modules).length!==2||!Object.hasOwn(value.modules,'accounts')||!Object.hasOwn(value.modules,'notes'))throw Error('请选择 Memo Vault 备份 JSON，不支持此文件格式或版本。');
+  return {type:'memo-vault-backup',version:value.version,modules:{accounts:validateEnvelope(value.modules.accounts),notes:validateNoteData(value.modules.notes??null)}};
 }
 export function parseBackupFile(text){
   if(typeof text!=='string'||text.length>MAX_BACKUP_BYTES||backupEncoder.encode(text).length>MAX_BACKUP_BYTES)throw Error('备份文件不能超过 32 MB。');
@@ -178,7 +178,7 @@ export class ModuleVault {
       const accounts=await encryptAccounts(this.#account.accounts,this.#accountKey,this.#record.account,{...this.#account.settings,moduleLocks:this.policy},this.#account.options,empty());
       this.#check(generation);
       // Export policy is separate from local module protection: notes are ordinary JSON.
-      const backup={type:'memo-vault-backup',version:1,exportedAt:new Date().toISOString(),modules:{accounts,notes:validateNoteData(this.#notes)}};
+      const backup={type:'memo-vault-backup',version:this.#notes.notes.some(n=>n.sections)?3:this.#notes.notes.some(n=>n.table)?2:1,exportedAt:new Date().toISOString(),modules:{accounts,notes:validateNoteData(this.#notes)}};
       const text=JSON.stringify(backup,null,2);
       if(backupEncoder.encode(text).length>MAX_BACKUP_BYTES)throw Error('备份文件超过当前 32 MB 限制，请减少笔记内容后重试。');
       return text;

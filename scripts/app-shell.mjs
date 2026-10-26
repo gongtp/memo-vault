@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 
-export const shellFiles=['index.html','app.js','vault.mjs','module-vault.mjs','lifecycle.mjs','notes.js','notes-model.mjs','offline.js','styles.css','icon.svg','manifest.webmanifest','icon-192.png','icon-512.png','apple-touch-icon.png'];
+export const shellFiles=['index.html','app.js','vault.mjs','module-vault.mjs','lifecycle.mjs','notes.js','notes-model.mjs','table-model.mjs','offline.js','styles.css','icon.svg','manifest.webmanifest','icon-192.png','icon-512.png','apple-touch-icon.png'];
 export const publicFiles=[...shellFiles,'sw.js'];
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function workerSource(root){

@@ -1,11 +1,13 @@
+import {validateTable,tableText} from './table-model.mjs';
 export const RETENTION_MS=30*24*60*60*1000;
 export const localDate=(date=new Date())=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
-export const noteTitle=n=>n.title.trim()||n.blocks.find(b=>b.text.trim())?.text.trim().split('\n')[0].slice(0,30)||'未命名笔记';
-export const noteText=n=>n.blocks.map(b=>`${b.type==='checklist'?(b.checked?'☑ ':'☐ '):b.type==='bullet'?'• ':''}${b.text}`).join('\n');
-export const hasContent=n=>Boolean(n.title.trim()||n.blocks.some(b=>b.text.trim()));
+const sectionsText=sections=>sections.map(s=>s.type==='table'?tableText(s.table):s.text).join('\n\n');
+export const noteTitle=n=>n.title.trim()||n.sections?.find(s=>s.type==='text'&&s.text.trim())?.text.trim().split('\n')[0].slice(0,30)||n.blocks.find(b=>b.text.trim())?.text.trim().split('\n')[0].slice(0,30)||'未命名笔记';
+export const noteText=n=>n.sections?sectionsText(n.sections):n.table?tableText(n.table):n.blocks.map(b=>`${b.type==='checklist'?(b.checked?'☑ ':'☐ '):b.type==='bullet'?'• ':''}${b.text}`).join('\n');
+export const hasContent=n=>Boolean(n.sections?.some(s=>s.type==='table'||s.text.trim())||n.table||n.title.trim()||n.blocks.some(b=>b.text.trim()));
 export function newNote(){const now=new Date().toISOString();return {id:crypto.randomUUID(),title:'',blocks:[{id:crypto.randomUUID(),type:'text',text:''}],tagIds:[],recordDate:localDate(),isPinned:false,archivedAt:null,deletedAt:null,createdAt:now,updatedAt:now};}
 export function normalizeDocuments(data){return {...data,notes:data.notes.map(n=>({...n,archivedAt:null,deletedAt:null}))};}
-export function documentText(note){return note.blocks.map(b=>b.type==='checklist'?`${b.checked?'☑':'☐'} ${b.text}`:b.type==='bullet'?`• ${b.text}`:b.text).join('\n');}
+export function documentText(note){return note.sections?sectionsText(note.sections):note.table?tableText(note.table):note.blocks.map(b=>b.type==='checklist'?`${b.checked?'☑':'☐'} ${b.text}`:b.type==='bullet'?`• ${b.text}`:b.text).join('\n');}
 export function documentBlocks(text){
  const blocks=[];let lines=[];
  const flush=()=>{if(lines.length){blocks.push({id:crypto.randomUUID(),type:'text',text:lines.join('\n')});lines=[];}};
@@ -30,7 +32,13 @@ export function validateNoteData(value={notes:[],tags:[]}){
   unique(blocks.map(b=>b.id));if(blocks.reduce((total,b)=>total+b.text.length,0)>20000)throw Error('单篇正文最多 20,000 字。');
   unique(n.tagIds);if(n.tagIds.some(t=>!tagIds.has(t)))throw Error('笔记引用了不存在的标签。');
   const recordDate=string(n.recordDate,10);if(!/^\d{4}-\d{2}-\d{2}$/.test(recordDate)||!Number.isFinite(Date.parse(recordDate))||new Date(recordDate).toISOString().slice(0,10)!==recordDate)throw Error('请选择有效的记录日期。');
-  return {id:id(n.id),title:string(n.title,100),blocks,tagIds:[...n.tagIds],recordDate,isPinned:n.isPinned,archivedAt:n.archivedAt===null?null:time(n.archivedAt),deletedAt:n.deletedAt===null?null:time(n.deletedAt),createdAt:time(n.createdAt),updatedAt:time(n.updatedAt)};
+  let sections;
+  if(n.sections!==undefined){
+   if(!Array.isArray(n.sections)||n.sections.length>60||n.table!==undefined)throw Error('混合文档格式无效，最多 60 个内容段。');
+   sections=n.sections.map(part=>{if(!part||!['text','table'].includes(part.type))throw Error('文档内容类型无效。');return {id:id(part.id),type:part.type,...(part.type==='table'?{table:validateTable(part.table)}:{text:string(part.text,20000)})};});
+   unique(sections.map(part=>part.id));if(sections.filter(part=>part.type==='table').length>20||sections.reduce((sum,part)=>sum+(part.text?.length??0),0)+blocks.reduce((sum,b)=>sum+b.text.length,0)>20000)throw Error('单篇最多 20 张表格、20,000 字正文。');
+  }
+  return {...(sections?{sections}:{}),...(n.table!==undefined?{table:validateTable(n.table)}:{}),id:id(n.id),title:string(n.title,100),blocks,tagIds:[...n.tagIds],recordDate,isPinned:n.isPinned,archivedAt:n.archivedAt===null?null:time(n.archivedAt),deletedAt:n.deletedAt===null?null:time(n.deletedAt),createdAt:time(n.createdAt),updatedAt:time(n.updatedAt)};
  });unique(notes.map(n=>n.id));return {notes,tags};
 }
 export function pruneNoteData(data,now=Date.now()){return {...data,notes:data.notes.filter(n=>!n.deletedAt||now-Date.parse(n.deletedAt)<RETENTION_MS)};}
@@ -43,4 +51,45 @@ export function filterNotes(data,{query='',scope='all',tag='',includeArchived=fa
   if(scope==='pinned'&&!n.isPinned)return false;
   return (!tag||n.tagIds.includes(tag))&&(!q||[n.title,noteText(n),...n.tagIds.map(id=>tags.get(id))].join('\n').toLocaleLowerCase().includes(q));
  }).sort((a,b)=>Number(b.isPinned)-Number(a.isPinned)||(sort==='date'?b.recordDate.localeCompare(a.recordDate):b.updatedAt.localeCompare(a.updatedAt))||b.id.localeCompare(a.id));
+}
+
+export function mixedSections(note){if(note.sections)return structuredClone(note.sections);const text=documentText({...note,table:undefined});const sections=[];if(text.trim()||!note.table)sections.push({id:crypto.randomUUID(),type:'text',text});if(note.table)sections.push({id:crypto.randomUUID(),type:'table',table:structuredClone(note.table)});return sections;}
+
+// Build a new value before touching the draft, so a limit error cannot lose text.
+export function insertDocumentTable(note,table,position=null){
+ const sections=mixedSections(note),part={id:crypto.randomUUID(),type:'table',table:structuredClone(table)};
+ const index=position?.sectionId?sections.findIndex(s=>s.id===position.sectionId):position?.plain&&!note.sections?0:-1;
+ if(index>=0&&sections[index].type==='text'){
+  const text=sections[index].text,offset=Math.max(0,Math.min(text.length,position.offset??text.length));
+  const tail={id:crypto.randomUUID(),type:'text',text:text.slice(offset)};
+  sections[index].text=text.slice(0,offset);sections.splice(index+1,0,part,tail);
+ }else sections.splice(Number.isInteger(position?.gap)?Math.max(0,Math.min(sections.length,position.gap)):sections.length,0,part);
+ if(sections.length>60||sections.filter(s=>s.type==='table').length>20)throw Error('单篇最多 60 个内容段、20 张表格。');
+ return {sections,tableId:part.id};
+}
+
+
+export function deleteTextBoundary(sections,id,direction=-1){
+ const index=sections.findIndex(p=>p.id===id),part=sections[index];
+ if(!part||part.type!=='text')return null;
+ const neighbor=sections[index+direction];
+ if(neighbor?.type==='text'){
+  const next=structuredClone(sections),left=direction<0?next[index-1]:next[index],right=direction<0?next[index]:next[index+1],offset=left.text.length;
+  left.text+=right.text;next.splice(direction<0?index:index+1,1);
+  return {sections:next,focusId:left.id,offset};
+ }
+ if(part.text===''&&sections.length>1){const next=structuredClone(sections);next.splice(index,1);const target=neighbor??next[0];return {sections:next,focusId:target.id,offset:direction<0?(target.text?.length??0):0};}
+ return null;
+}
+
+
+// View-only pagination: callers filter and sort the full collection first.
+export function paginate(items,requested=1,size=10){
+ const pages=Math.max(1,Math.ceil(items.length/size));
+ const page=Math.min(pages,Math.max(1,Number.isFinite(requested)?Math.trunc(requested):1));
+ const offset=(page-1)*size;
+ return {items:items.slice(offset,offset+size),page,pages,total:items.length,start:items.length?offset+1:0,end:Math.min(offset+size,items.length)};
+}
+export function paginationControls(view,kind){
+ return `<nav class="list-pagination" aria-label="${kind==='accounts'?'账号':'笔记'}分页"><div class="pagination-summary" aria-live="polite">共 ${view.total} 条 · ${view.start}–${view.end} 条</div><div class="pagination-actions"><button type="button" class="button secondary" data-list-kind="${kind}" data-list-page="${view.page-1}" ${view.page===1?'disabled':''}>上一页</button><span aria-live="polite">${view.page} / ${view.pages} 页</span><button type="button" class="button secondary" data-list-kind="${kind}" data-list-page="${view.page+1}" ${view.page===view.pages?'disabled':''}>下一页</button></div></nav>`;
 }

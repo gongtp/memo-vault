@@ -1,3 +1,4 @@
+import {paginate,paginationControls} from './notes-model.mjs';
 import {createNotes} from './notes.js';
 import {mountOfflineSettings} from './offline.js';
 import {ConflictError,LockedError} from './vault.mjs';
@@ -29,7 +30,7 @@ const paths = {
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.key}</svg>`;
 function hydrateIcons(){document.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));}
 const escapeHTML = (value='') => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let accounts=[];
+let accounts=[],accountPage=1;
 const session=new ModuleVault();
 let page='overview',filter='全部',query='',selected=null,sort='recent',editId=null,showPassword=false,pendingImport=null;
 let existing=false,ready=false,busy=false,authAction=null,authorization=null,revealTimer,authTimer,pendingDelete=null,optionKind='categories',pendingOptionDelete=null;
@@ -63,25 +64,36 @@ function render(){
  if(page==='notes') notes.render();
 }
 function renderAccounts(){
- content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">A PLACE FOR YOUR DIGITAL LIFE</span><h1>账号管理</h1><p>收好每一个数字身份，让生活少一点忘记。</p></div><button class="button primary" data-action="add">${icon('plus')}添加账号</button></div><div class="accounts-layout"><section class="list-panel" aria-label="账号列表"><div class="list-toolbar"><div class="list-title"><h2>我的账号<span id="list-count"></span></h2><select class="sort-select" id="sort" aria-label="账号排序"><option value="recent">最近更新 ↓</option><option value="name">名称排序 ↓</option></select></div><div class="search-box">${icon('search')}<input id="search" type="search" aria-label="搜索账号" placeholder="搜索平台、账号或备注…" value="${escapeHTML(query)}"><kbd>⌘ / Ctrl K</kbd></div><div class="filters account-filters"></div></div><div class="table-head"><span>平台 / 登录账号</span><span>分类</span><span>常用</span></div><div id="account-rows"></div><div class="list-footer"><span id="result-count"></span><span>${icon('clock')}仅本次会话</span></div></section><aside class="detail-panel" id="detail" aria-label="账号详情"></aside></div>${footer()}`;
+ content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">A PLACE FOR YOUR DIGITAL LIFE</span><h1>账号管理</h1><p>收好每一个数字身份，让生活少一点忘记。</p></div><button class="button primary" data-action="add">${icon('plus')}添加账号</button></div><div class="accounts-layout"><section class="list-panel" aria-label="账号列表"><div class="list-toolbar"><div class="list-title"><h2>我的账号<span id="list-count"></span></h2><select class="sort-select" id="sort" aria-label="账号排序"><option value="recent">最近更新 ↓</option><option value="name">名称排序 ↓</option></select></div><div class="search-box">${icon('search')}<input id="search" type="search" aria-label="搜索账号" placeholder="搜索平台、账号或备注…" value="${escapeHTML(query)}"><kbd>⌘ / Ctrl K</kbd></div><div class="filters account-filters"></div></div><div class="table-head"><span>平台 / 登录账号</span><span>分类</span><span>常用</span></div><div id="account-rows"></div><div id="account-pagination"></div><div class="list-footer"><span id="result-count"></span><span>${icon('clock')}仅本次会话</span></div></section><aside class="detail-panel" id="detail" aria-label="账号详情"></aside></div>${footer()}`;
  document.querySelector('.list-footer span:last-child').innerHTML=`${icon('shield')}本地已加密`;
  document.querySelector('.account-filters').innerHTML=[['全部','全部'],['常用','☆ 常用']].map(([key,label])=>`<button class="filter ${filter===key?'active':''}" data-filter="${escapeHTML(key)}" aria-pressed="${filter===key}">${escapeHTML(label)}</button>`).join('');
  const categorySelect=document.createElement('select');categorySelect.id='account-category-filter';categorySelect.className='account-category-filter';categorySelect.setAttribute('aria-label','按账号分类筛选');
  categorySelect.innerHTML='<option value="全部">选择分类</option>'+session.options.categories.map(name=>`<option value="${escapeHTML('category:'+name)}">${escapeHTML(name)}</option>`).join('');
  categorySelect.value=filter.startsWith('category:')?filter:'全部';categorySelect.classList.toggle('active',filter.startsWith('category:'));
- categorySelect.onchange=e=>{hidePassword();filter=e.target.value;renderAccounts();document.getElementById('account-category-filter').focus();};
+ categorySelect.onchange=e=>{
+  hidePassword();accountPage=1;filter=e.target.value;
+  // Keep the native select mounted: replacing and refocusing it can reopen mobile pickers.
+  categorySelect.classList.toggle('active',filter.startsWith('category:'));
+  document.querySelectorAll('.account-filters [data-filter]').forEach(button=>{
+   const active=button.dataset.filter===filter;
+   button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
+  });
+  renderRows();
+ };
  document.querySelector('.account-filters').append(categorySelect);
  document.getElementById('sort').value=sort;
- document.getElementById('search').oninput=e=>{showPassword=false;clearTimeout(revealTimer);query=e.target.value;renderRows();};
- document.getElementById('sort').onchange=e=>{hidePassword();sort=e.target.value;renderRows();};
+ document.getElementById('search').oninput=e=>{showPassword=false;clearTimeout(revealTimer);query=e.target.value;accountPage=1;renderRows();};
+ document.getElementById('sort').onchange=e=>{hidePassword();sort=e.target.value;accountPage=1;renderRows();};
  renderRows(); renderDetail();
 }
 function renderRows(){
  const list=accounts.filter(a=>(filter==='全部'||(filter==='常用'?a.favorite:a.category===filter.slice(9)))&&[a.name,a.username,a.note].some(s=>s.toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id);
+ const view=paginate(list,accountPage);accountPage=view.page;
+ if(!view.items.some(a=>a.id===selected))selected=view.items[0]?.id??null;
+ document.getElementById('account-pagination').innerHTML=paginationControls(view,'accounts');
  document.getElementById('list-count').textContent=`${list.length}`;
  document.getElementById('result-count').textContent=`共 ${list.length} 个账号`;
- document.getElementById('account-rows').innerHTML=list.length ? list.map(a=>`<button class="account-row ${a.id===selected?'selected':''}" data-account="${a.id}" aria-label="查看 ${escapeHTML(a.name)} 的详情" aria-pressed="${a.id===selected}"><span class="account-identity">${platform(a)}<span class="account-text"><strong>${escapeHTML(a.name)}</strong><small>${escapeHTML(a.username)}</small></span></span><span class="category-tag">${escapeHTML(a.category||'未分类')}</span><span class="star-icon ${a.favorite?'on':''}" aria-label="${a.favorite?'常用账号':'普通账号'}">${icon('star')}</span></button>`).join('') : `<div class="empty">${accounts.length?'没有找到对应账号':'信息库还是空的，添加你的第一个账号吧。'}<br><button class="button secondary" data-action="${accounts.length?'reset':'add'}">${accounts.length?'清除筛选':'添加账号'}</button></div>`;
- if(list.length&&!list.some(a=>a.id===selected)){selected=list[0].id;renderRows();return;}
+ document.getElementById('account-rows').innerHTML=list.length ? view.items.map(a=>`<button class="account-row ${a.id===selected?'selected':''}" data-account="${a.id}" aria-label="查看 ${escapeHTML(a.name)} 的详情" aria-pressed="${a.id===selected}"><span class="account-identity">${platform(a)}<span class="account-text"><strong>${escapeHTML(a.name)}</strong><small>${escapeHTML(a.username)}</small></span></span><span class="category-tag">${escapeHTML(a.category||'未分类')}</span><span class="star-icon ${a.favorite?'on':''}" aria-label="${a.favorite?'常用账号':'普通账号'}">${icon('star')}</span></button>`).join('') : `<div class="empty">${accounts.length?'没有找到对应账号':'信息库还是空的，添加你的第一个账号吧。'}<br><button class="button secondary" data-action="${accounts.length?'reset':'add'}">${accounts.length?'清除筛选':'添加账号'}</button></div>`;
  if(!list.length){selected=null;}
  renderDetail();
 }
@@ -184,7 +196,7 @@ function clearImport(){
 function closeImport(){clearImport();$('import-dialog').close();}
 function lock(message='已锁定。请输入主密码继续。'){
  const keepNotes=page==='notes'&&!session.policy.notes&&notes.active;
- session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];query='';selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
+ session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];accountPage=1;query='';selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
  clearTimeout(revealTimer);clearAuth();clearImport();cancelMaster();
  for(const dialog of document.querySelectorAll('dialog[open]'))if(!keepNotes||!dialog.classList.contains('notes-dialog'))dialog.close();
  $('account-form').reset();$('account-form').elements.category.replaceChildren();$('account-form').elements.method.replaceChildren();$('gate-form').reset();$('change-password-form').reset();$('change-password-error').textContent='';$('save-error').textContent='';
@@ -385,7 +397,8 @@ document.addEventListener('click',async e=>{
   void requireMaster(async()=>{hidePassword();$('import-file').click();});return;
  }
  if(!session.unlocked)return;
- const f=e.target.closest('[data-filter]');if(f){hidePassword();filter=f.dataset.filter;renderAccounts();return;}
+ const pager=e.target.closest('[data-list-kind="accounts"][data-list-page]');if(pager){hidePassword();accountPage=Number(pager.dataset.listPage);renderRows();document.querySelector('.accounts-layout .list-toolbar').scrollIntoView({block:'start'});return;}
+ const f=e.target.closest('[data-filter]');if(f){hidePassword();filter=f.dataset.filter;accountPage=1;renderAccounts();return;}
  const row=e.target.closest('[data-account]');if(row){hidePassword();selected=Number(row.dataset.account);renderRows();document.querySelector('.accounts-layout').classList.add('show-detail');window.scrollTo(0,0);return;}
  const copy=e.target.closest('[data-copy]');if(copy){
   if(copy.dataset.copy==='password')requestVerification('copy');
@@ -399,7 +412,7 @@ document.addEventListener('click',async e=>{
  if(action==='explain')explain();
  if(action==='reveal'){if(showPassword)hidePassword();else requestVerification('reveal');}
  if(action==='back'){hidePassword();document.querySelector('.accounts-layout').classList.remove('show-detail');}
- if(action==='reset'){hidePassword();filter='全部';query='';renderAccounts();}
+ if(action==='reset'){accountPage=1;hidePassword();filter='全部';query='';renderAccounts();}
  if(action==='favorite')void perform(async()=>{
   hidePassword();const next=accounts.map(a=>a.id===selected?{...a,favorite:!a.favorite}:a);
   const mobile=document.querySelector('.accounts-layout').classList.contains('show-detail');
@@ -436,7 +449,7 @@ $('import-confirm').onchange=syncButtons;
 $('confirm-import').onclick=()=>void perform(async()=>{
  if(!pendingImport||!$('import-confirm').checked)return;
  const staged=pendingImport;await session.importPrepared(staged);changed();closeImport();
- page='accounts';filter='全部';query='';enterVault();toast('备份已导入并保存到本设备。');
+ page='accounts';filter='全部';query='';accountPage=1;enterVault();toast('备份已导入并保存到本设备。');
 },'import-error');
 $('account-form').onsubmit=e=>{
  e.preventDefault();if(busy||!session.unlocked)return;
@@ -446,7 +459,7 @@ $('account-form').onsubmit=e=>{
  $('save-error').textContent='';
  void perform(async()=>{
   const next=editId?accounts.map(a=>a.id===editId?record:a):[...accounts,record];await session.save(next);
-  accounts=session.accounts;selected=record.id;filter='全部';query='';page='accounts';$('account-form').reset();$('account-dialog').close();changed();render();toast('已加密保存到本设备。');
+  accounts=session.accounts;selected=record.id;filter='全部';query='';accountPage=Math.floor([...accounts].sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id).findIndex(a=>a.id===record.id)/10)+1;page='accounts';$('account-form').reset();$('account-dialog').close();changed();render();toast('已加密保存到本设备。');
  },'save-error');
 };
 const closeAccount=()=>{$('account-form').reset();$('account-dialog').close();editId=null;};
