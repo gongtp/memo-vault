@@ -205,6 +205,23 @@ function lock(message='已锁定。请输入主密码继续。'){
  if(!keepNotes)render();$('gate-error').textContent=message;syncButtons();
 }
 function changed(){channel?.postMessage('changed');}
+let accountReturnPosition=null;
+function returnToAccountList(){
+ const layout=document.querySelector('.accounts-layout');
+ if(!layout)return;
+ hidePassword();layout.classList.remove('show-detail');
+ const row=layout.querySelector('.account-row.selected');
+ if(!row)return;
+ row.focus({preventScroll:true});
+ if(accountReturnPosition?.id===Number(row.dataset.account)){
+  const rect=row.getBoundingClientRect();
+  const nav=document.querySelector('.mobile-nav')?.getBoundingClientRect();
+  const bottom=nav?.height?nav.top:window.innerHeight;
+  const top=Math.max(12,Math.min(accountReturnPosition.top,bottom-rect.height-12));
+  window.scrollTo({top:Math.max(0,window.scrollY+rect.top-top),behavior:'instant'});
+ }else row.scrollIntoView({block:'center',behavior:'instant'});
+ accountReturnPosition=null;
+}
 function openForm(edit=false){
  if(!session.unlocked)return;
  hidePassword();editId=edit?selected:null;const form=$('account-form');form.reset();$('save-error').textContent='';
@@ -426,7 +443,7 @@ document.addEventListener('click',async e=>{
  if(!session.unlocked)return;
  const pager=e.target.closest('[data-list-kind="accounts"][data-list-page]');if(pager){hidePassword();accountPage=Number(pager.dataset.listPage);renderRows();document.querySelector('.accounts-layout .list-toolbar').scrollIntoView({block:'start'});return;}
  const f=e.target.closest('[data-filter]');if(f){hidePassword();filter=f.dataset.filter;accountPage=1;renderAccounts();return;}
- const row=e.target.closest('[data-account]');if(row){hidePassword();selected=Number(row.dataset.account);renderRows();document.querySelector('.accounts-layout').classList.add('show-detail');window.scrollTo(0,0);return;}
+ const row=e.target.closest('[data-account]');if(row){accountReturnPosition={id:Number(row.dataset.account),top:row.getBoundingClientRect().top};hidePassword();selected=Number(row.dataset.account);renderRows();document.querySelector('.accounts-layout').classList.add('show-detail');window.scrollTo(0,0);return;}
  const copy=e.target.closest('[data-copy]');if(copy){
   if(copy.dataset.copy==='password')requestVerification('copy');
   else navigator.clipboard?.writeText(accounts.find(a=>a.id===selected)[copy.dataset.copy==='phone'?'phone':'username']).then(()=>toast(copy.dataset.copy==='phone'?'手机号已复制。':'登录账号已复制。')).catch(()=>toast('浏览器未允许复制，请手动选择。'));
@@ -438,7 +455,7 @@ document.addEventListener('click',async e=>{
  if(action==='change-password')requestVerification('changePassword');
  if(action==='explain')explain();
  if(action==='reveal'){if(showPassword)hidePassword();else requestVerification('reveal');}
- if(action==='back'){hidePassword();document.querySelector('.accounts-layout').classList.remove('show-detail');}
+ if(action==='back')returnToAccountList();
  if(action==='reset'){accountPage=1;hidePassword();filter='全部';query='';renderAccounts();}
  if(action==='favorite')void perform(async()=>{
   hidePassword();const next=accounts.map(a=>a.id===selected?{...a,favorite:!a.favorite}:a);
