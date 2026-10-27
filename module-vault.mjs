@@ -9,7 +9,7 @@ export const MAX_BACKUP_BYTES=32*1024*1024;
 const backupEncoder=new TextEncoder();
 export function validateBackup(value){
   if(value?.type==='memo-vault-encrypted')return validateEnvelope(value);
-  if(value?.type!=='memo-vault-backup'||![1,2,3].includes(value.version)||!value.modules||Object.keys(value.modules).length!==2||!Object.hasOwn(value.modules,'accounts')||!Object.hasOwn(value.modules,'notes'))throw Error('请选择 Memo Vault 备份 JSON，不支持此文件格式或版本。');
+  if(value?.type!=='memo-vault-backup'||![1,2,3,4].includes(value.version)||!value.modules||Object.keys(value.modules).length!==2||!Object.hasOwn(value.modules,'accounts')||!Object.hasOwn(value.modules,'notes'))throw Error('请选择 Memo Vault 备份 JSON，不支持此文件格式或版本。');
   return {type:'memo-vault-backup',version:value.version,modules:{accounts:validateEnvelope(value.modules.accounts),notes:validateNoteData(value.modules.notes??null)}};
 }
 export function parseBackupFile(text){
@@ -143,11 +143,24 @@ export class ModuleVault {
   updateSettings(value){if(typeof value!=='boolean')throw Error('操作验证设置无效。');return this.#editAccount(d=>{d.settings.verifyBeforeActions=value;},false);}
   addOption(kind,name){return this.#option(kind,name,false);}
   removeOption(kind,name){return this.#option(kind,name,true);}
+  saveCategory(original,name,parent=''){
+    return this.#editAccount(d=>{
+      if(typeof name!=='string'||!name.trim()||name.trim().length>40)throw Error('分类名称应为 1 至 40 个字符。');
+      name=name.trim();const names=d.options.categories,links=d.options.categoryParents??[];
+      if(original!==null&&!names.includes(original))throw Error('分类不存在。');
+      if(name!==original&&names.includes(name))throw Error('分类名称已存在。');
+      if(parent&&(!names.includes(parent)||parent===original||parent===name||links.some(x=>x.name===parent)||links.some(x=>x.parent===original)))throw Error('请选择一级分类作为上级；已有子分类的分类不能移动到第二级。');
+      if(original===null)names.push(name);else names[names.indexOf(original)]=name;
+      d.options.categoryParents=links.filter(x=>x.name!==original).map(x=>({name:x.name,parent:x.parent===original?name:x.parent}));
+      if(parent)d.options.categoryParents.push({name,parent});
+      for(const a of d.accounts)if(original!==null&&a.category===original)a.category=name;
+    });
+  }
   #option(kind,name,remove){
     return this.#editAccount(d=>{
       if(!['categories','methods'].includes(kind)||typeof name!=='string'||!name.trim()||name.trim().length>40)throw Error('选项名称无效。');
       name=name.trim();const list=d.options[kind];
-      if(remove){if(d.accounts.some(a=>a[kind==='categories'?'category':'method']===name))throw Error('已有账号正在使用，不能删除。');d.options[kind]=list.filter(n=>n!==name);}
+      if(remove){if(d.accounts.some(a=>a[kind==='categories'?'category':'method']===name))throw Error('已有账号正在使用，不能删除。');if(kind==='categories'&&d.options.categoryParents?.some(x=>x.parent===name))throw Error('请先移动或删除子分类。');d.options[kind]=list.filter(n=>n!==name);if(kind==='categories'&&d.options.categoryParents)d.options.categoryParents=d.options.categoryParents.filter(x=>x.name!==name);}
       else{if(list.includes(name))throw Error('这个选项已经存在。');list.push(name);}
     });
   }
@@ -178,7 +191,7 @@ export class ModuleVault {
       const accounts=await encryptAccounts(this.#account.accounts,this.#accountKey,this.#record.account,{...this.#account.settings,moduleLocks:this.policy},this.#account.options,empty());
       this.#check(generation);
       // Export policy is separate from local module protection: notes are ordinary JSON.
-      const backup={type:'memo-vault-backup',version:this.#notes.notes.some(n=>n.sections)?3:this.#notes.notes.some(n=>n.table)?2:1,exportedAt:new Date().toISOString(),modules:{accounts,notes:validateNoteData(this.#notes)}};
+      const backup={type:'memo-vault-backup',version:this.#notes.notes.some(n=>n.format==='markdown')?4:this.#notes.notes.some(n=>n.sections)?3:this.#notes.notes.some(n=>n.table)?2:1,exportedAt:new Date().toISOString(),modules:{accounts,notes:validateNoteData(this.#notes)}};
       const text=JSON.stringify(backup,null,2);
       if(backupEncoder.encode(text).length>MAX_BACKUP_BYTES)throw Error('备份文件超过当前 32 MB 限制，请减少笔记内容后重试。');
       return text;

@@ -1,11 +1,12 @@
 import {newTable,cellValue,total,format,validateTable,formulaLabel,operators,tableWithTotal,moveTableColumn} from './table-model.mjs';
-import {newNote,noteTitle,noteText,hasContent,normalizeDocuments,documentText,documentBlocks,mixedSections,insertDocumentTable,deleteTextBoundary,paginate,paginationControls} from './notes-model.mjs';
+import {newMarkdown,renderMarkdown,newNote,noteTitle,noteText,hasContent,normalizeDocuments,documentText,documentBlocks,mixedSections,insertDocumentTable,deleteTextBoundary,paginate,paginationControls} from './notes-model.mjs';
 
 const esc=(value='')=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const button=(action,label,style='secondary')=>`<button type="button" class="button ${style}" data-note-action="${action}">${label}</button>`;
 const dateLabel=value=>new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 export function createNotes({session,root,changed,toast,onError}){
+ let mdPreview=false;
  let active=false,selected=null,draft=null,editing=false,dirty=false,version=0,timer,maxTimer,saving=null,composing=false,working=false;
  let legacyEditingParts=null,textCaret=null,cellCursor=null,tableSelected=false,expandedTable=false,returnScroll=0;let rowDraftDirty=false;let activeTableId=null;let listPage=1;let query='',tag='',sort='recent',history=[],future=[],lastHistory=0;
  const dialog=document.createElement('dialog');dialog.className='notes-dialog';document.body.append(dialog);
@@ -79,7 +80,7 @@ export function createNotes({session,root,changed,toast,onError}){
   const list=store.notes.filter(n=>(!tag||n.tagIds.includes(tag))&&(!q||[n.title,noteText(n),...names(n)].some(s=>s.toLocaleLowerCase().includes(q)))).sort((a,b)=>sort==='date'?b.recordDate.localeCompare(a.recordDate)||b.updatedAt.localeCompare(a.updatedAt):b.updatedAt.localeCompare(a.updatedAt));
   const view=paginate(list,listPage);listPage=view.page;$('#note-pagination').innerHTML=paginationControls(view,'notes');
   $('#note-count').textContent=list.length;
-  $('#note-rows').innerHTML=list.length?view.items.map(n=>`<button class="note-row ${n.id===selected?'selected':''}" data-note-id="${esc(n.id)}" aria-pressed="${n.id===selected}"><span class="note-row-title">${esc(noteTitle(n))}</span><span class="note-preview">${esc(noteText(n).slice(0,200)||'暂无正文')}</span><span class="note-row-meta"><time>${esc(dateLabel(n.updatedAt))}</time><span>${n.sections?'文档 · '+n.sections.filter(p=>p.type==='table').length+' 张表格':n.table?'表格 · '+n.table.rows.length+' 行':documentText(n).length+' 字'}</span></span><span class="note-tags">${names(n).slice(0,2).map(t=>`<span>${esc(t)}</span>`).join('')}</span></button>`).join(''):`<div class="empty">${query||tag?'没有找到对应文档':'从一张空白文档开始。'}<br>${query||tag?button('clear-filter','清除筛选'):button('new','新建文档')}</div>`;
+  $('#note-rows').innerHTML=list.length?view.items.map(n=>`<button class="note-row ${n.id===selected?'selected':''}" data-note-id="${esc(n.id)}" aria-pressed="${n.id===selected}"><span class="note-row-title">${esc(noteTitle(n))}</span><span class="note-preview">${esc(noteText(n).slice(0,200)||'暂无正文')}</span><span class="note-row-meta"><time>${esc(dateLabel(n.updatedAt))}</time><span>${n.format==='markdown'?'Markdown · '+documentText(n).length+' 字':n.sections?'文档 · '+n.sections.filter(p=>p.type==='table').length+' 张表格':n.table?'表格 · '+n.table.rows.length+' 行':documentText(n).length+' 字'}</span></span><span class="note-tags">${names(n).slice(0,2).map(t=>`<span>${esc(t)}</span>`).join('')}</span></button>`).join(''):`<div class="empty">${query||tag?'没有找到对应文档':'从一张空白文档开始。'}<br>${query||tag?button('clear-filter','清除筛选'):button('new','新建文档')}</div>`;
  }
  function renderDetail(){
   const el=$('#note-detail');if(!el)return;
@@ -88,20 +89,20 @@ export function createNotes({session,root,changed,toast,onError}){
   if(!n){editing=false;el.innerHTML='<div class="notes-welcome"><span>✎</span><h2>写下一篇新文档</h2><p>选择左侧文档继续写，或从空白开始。</p>'+button('new','＋ 新建文档','primary')+'</div>';return;}
   if(!editing){renderReading(el,n);return;}
   if(!draft)draft={...structuredClone(n),tagNames:names(n).join(', ')};
-  el.innerHTML=`<div class="note-detail-toolbar document-toolbar">${button('back','‹ 所有文档')}<button type="button" id="note-save-status" class="note-save-status" aria-live="polite" data-note-action="retry">${dirty?'待保存':hasContent(draft)?'已保存到本机':'自动保存'}</button>${button('done','完成','primary')}</div><div class="document-paper"><input id="note-title" class="document-title" aria-label="文档标题" maxlength="100" placeholder="无标题文档" value="${esc(draft.title)}"><div class="document-writing-tools" role="toolbar" aria-label="编辑工具"></div>${draft.sections||draft.table?mixedEditor():`<textarea id="note-body" class="document-body" aria-label="文档正文" placeholder="从这里开始写…" rows="12" spellcheck="false">${esc(documentText(draft))}</textarea><div class="document-foot"><span id="document-word-count">${documentText(draft).length} 字</span><span>${session.settings.moduleLocks.notes?'自动加密保存':'自动保存到本机'}</span></div>`}<details class="document-properties"><summary>文档信息</summary><div class="note-meta-inputs"><label>记录日期<input id="note-date" type="date" value="${esc(draft.recordDate)}" required></label><label>标签<input id="note-tags" list="note-tag-suggestions" placeholder="可选，用逗号分隔" value="${esc(draft.tagNames)}" maxlength="210"></label><datalist id="note-tag-suggestions">${data().tags.map(t=>`<option value="${esc(t.name)}"></option>`).join('')}</datalist></div></details></div>`;
+  el.innerHTML=`<div class="note-detail-toolbar document-toolbar">${button('back','‹ 所有文档')}<button type="button" id="note-save-status" class="note-save-status" aria-live="polite" data-note-action="retry">${dirty?'待保存':hasContent(draft)?'已保存到本机':'自动保存'}</button>${button('done','完成','primary')}</div><div class="document-paper"><input id="note-title" class="document-title" aria-label="文档标题" maxlength="100" placeholder="无标题文档" value="${esc(draft.title)}"><div class="document-writing-tools" role="toolbar" aria-label="编辑工具"></div>${draft.sections||draft.table?mixedEditor():`<textarea id="note-body" class="document-body ${draft.format==='markdown'?'markdown-source':''}" aria-label="${draft.format==='markdown'?'Markdown 源码':'文档正文'}" placeholder="${draft.format==='markdown'?'# 标题，或从这里开始写 Markdown…':'从这里开始写…'}" maxlength="20000" rows="12" spellcheck="false">${esc(documentText(draft))}</textarea><div class="document-foot"><span id="document-word-count">${documentText(draft).length} 字</span><span>${session.settings.moduleLocks.notes?'自动加密保存':'自动保存到本机'}</span></div>`}${draft.format==='markdown'?'<div id="markdown-preview" class="markdown-rendered" hidden></div>':''}<details class="document-properties"><summary>文档信息</summary><div class="note-meta-inputs"><label>记录日期<input id="note-date" type="date" value="${esc(draft.recordDate)}" required></label><label>标签<input id="note-tags" list="note-tag-suggestions" placeholder="可选，用逗号分隔" value="${esc(draft.tagNames)}" maxlength="210"></label><datalist id="note-tag-suggestions">${data().tags.map(t=>`<option value="${esc(t.name)}"></option>`).join('')}</datalist></div></details></div>`;
   syncTools();syncViewport();
   for(const [id,key] of [['note-title','title'],['note-date','recordDate'],['note-tags','tagNames']])$('#'+id).oninput=e=>{remember();draft[key]=e.target.value;touched();};
   if(draft.sections||draft.table){bindMixed();return;}
   const body=$('#note-body');resize(body);trackCaret(body);
-  body.oninput=()=>{remember();draft.blocks=documentBlocks(body.value);$('#document-word-count').textContent=`${body.value.length} 字`;resize(body);touched();};
+  body.oninput=()=>{remember();draft.blocks=draft.format==='markdown'?[{...draft.blocks[0],text:body.value}]:documentBlocks(body.value);$('#document-word-count').textContent=`${body.value.length} 字`;resize(body);touched();};
  }
 
  function tableReading(table){return `<div class="note-table-scroll reading-table-scroll" tabindex="0" aria-label="可横向滚动的表格"><table class="note-table reading-table"><thead><tr>${table.columns.map(c=>`<th scope="col">${esc(c.name)}</th>`).join('')}</tr></thead><tbody>${table.rows.map((row,i)=>`<tr>${table.columns.map(c=>`<td>${esc(c.type==='product'?calculated(()=>cellValue(table,row,c)):row[c.id]??'')}</td>`).join('')}</tr>`).join('')}</tbody></table></div><div class="table-totals">${table.columns.filter(c=>c.sum).map(c=>`<span>${esc(c.name)}合计 <strong>${esc(calculated(()=>total(table,c)))}</strong></span>`).join('')}</div>`;}
  function renderReading(el,n){
   const table=n.table;
   let readIndex=0;const readTable=t=>`<div class="reading-table-block"><button class="button secondary reading-expand" type="button" data-expand-reading="${readIndex++}">展开表格</button>${tableReading(t)}</div>`;
-  const body=n.sections?n.sections.map(part=>part.type==='table'?readTable(part.table):`<div class="document-reading-body mixed-reading-text">${esc(part.text)}</div>`).join(''):table?readTable(table):`<div class="document-reading-body">${esc(documentText(n))||'<span class="document-empty">暂无正文</span>'}</div>`;
-  el.innerHTML=`<div class="note-detail-toolbar document-toolbar reading-toolbar">${button('back','‹ 所有文档')}<div class="reading-actions">${button('edit','编辑','primary')}<details class="notes-more"><summary aria-label="更多文档操作">•••</summary><div>${button('copy','复制全文')}${button('delete','删除文档','danger')}</div></details></div></div><article class="document-paper document-reading"><h2>${esc(noteTitle(n))}</h2>${body}</article>`;
+  const body=n.format==='markdown'?`<div class="markdown-rendered">${renderMarkdown(documentText(n))||'<p class="document-empty">暂无正文</p>'}</div>`:n.sections?n.sections.map(part=>part.type==='table'?readTable(part.table):`<div class="document-reading-body mixed-reading-text">${esc(part.text)}</div>`).join(''):table?readTable(table):`<div class="document-reading-body">${esc(documentText(n))||'<span class="document-empty">暂无正文</span>'}</div>`;
+  el.innerHTML=`<div class="note-detail-toolbar document-toolbar reading-toolbar">${button('back','‹ 所有文档')}<div class="reading-actions">${button('edit','编辑','primary')}<details class="notes-more"><summary aria-label="更多文档操作">•••</summary><div>${button('copy','复制全文')}${n.format==='markdown'?button('export-md','导出 .md'):''}${button('delete','删除文档','danger')}</div></details></div></div><article class="document-paper document-reading"><h2>${esc(noteTitle(n))}</h2>${body}</article>`;
  }
 
  function resize(el,minHeight=360){
@@ -111,16 +112,43 @@ export function createNotes({session,root,changed,toast,onError}){
   el.parentElement.append(measure);
   try{const height=`${Math.max(minHeight,measure.scrollHeight+2)}px`;if(el.style.height!==height)el.style.height=height;}finally{measure.remove();}
  }
- async function open(id=null){
+ async function open(id=null,created=null){
   if(!await settle()||id&&!await authorize())return;
-  const n=id?data().notes.find(n=>n.id===id):newNote();if(!n)return;
+  const n=id?data().notes.find(n=>n.id===id):(created??newNote());if(!n)return;
   if(!id)listPage=1;
-  textCaret=null;tableSelected=false;cellCursor=null;expandedTable=false;selected=n.id;editing=!id;draft=id?null:{...n,tagNames:''};
+  mdPreview=false;textCaret=null;tableSelected=false;cellCursor=null;expandedTable=false;selected=n.id;editing=!id;draft=id?null:{...n,tagNames:''};
   dirty=false;history=[];future=[];renderList();renderDetail();
-  if(!id&&n.table)touched();if(!id)$('#note-title')?.focus();window.scrollTo(0,0);
+  if(!id&&(n.table||hasContent(n)))touched();if(!id)$('#note-title')?.focus();window.scrollTo(0,0);
  }
 
- function chooseNew(){return open();}
+ function chooseNew(){
+  closeDialog();dialog.setAttribute('aria-label','新建文档');dialog.removeAttribute('aria-labelledby');
+  dialog.innerHTML=`<h2>新建文档</h2><div class="document-type-options"><button type="button" data-new-plain><strong>普通文档</strong><small>自由记录，支持表格和自动合计</small></button><button type="button" data-new-md><strong>Markdown 文档</strong><small>用 Markdown 编写，阅读时自动排版</small></button></div><div class="form-footer"><button type="button" class="button secondary" data-import-md>导入 .md</button><button type="button" class="button secondary" data-cancel-new>取消</button></div><input type="file" accept=".md,.markdown,text/markdown,text/plain" data-md-file hidden>`;
+  dialog.showModal();dialog.querySelector('[data-cancel-new]').onclick=()=>closeDialog();
+  dialog.querySelector('[data-new-plain]').onclick=()=>{closeDialog();void run(()=>open());};
+  dialog.querySelector('[data-new-md]').onclick=()=>{closeDialog();void run(()=>open(null,newMarkdown()));};
+  const fileInput=dialog.querySelector('[data-md-file]');dialog.querySelector('[data-import-md]').onclick=()=>fileInput.click();
+  fileInput.onchange=()=>{const file=fileInput.files[0];if(!file)return;const generation=session.generation;void run(async()=>{
+   if(!/\.(md|markdown)$/i.test(file.name))throw Error('请选择 .md 或 .markdown 文件。');
+   if(file.size>100000)throw Error('Markdown 文件过大，正文最多 20,000 字。');
+   const text=new TextDecoder('utf-8',{fatal:true}).decode(await file.arrayBuffer()).replace(/^\uFEFF/,'');
+   if(generation!==session.generation||!active||!session.unlocked)return;
+   const note=newMarkdown(text,file.name.replace(/\.(md|markdown)$/i,'').slice(0,100));closeDialog();await open(null,note);
+  });};
+ }
+ function markdownTools(){if(mdPreview)return button('md-preview','返回源码');return `${button('md-preview',mdPreview?'返回源码':'预览')}${button('md-heading','标题')}${button('md-bold','加粗')}${button('md-list','列表')}${button('md-code','代码')}<details class="notes-more"><summary aria-label="更多 Markdown 工具">•••</summary><div>${button('md-quote','引用')}${button('md-link','链接')}${button('md-table','表格')}${button('undo','撤销')}${button('redo','重做')}</div></details>`;}
+ function insertMarkdown(kind){
+  if(composing||mdPreview)return;
+  const body=$('#note-body');if(!body)return;
+  const start=body.selectionStart,end=body.selectionEnd,selectedText=body.value.slice(start,end);
+  const snippets={heading:['## ','标题',''],bold:['**','加粗文字','**'],list:['- ','列表项',''],code:['`','代码','`'],quote:['> ','引用内容',''],link:['[','链接文字','](https://example.com)'],table:['','| 列一 | 列二 |\n| --- | --- |\n| 内容 | 内容 |','']};
+  const [prefix,placeholder,suffix]=snippets[kind],line=['heading','list','quote','table'].includes(kind),before=line&&start>0&&body.value[start-1]!=='\n'?'\n':'';
+  const text=selectedText||placeholder,insert=before+prefix+text+suffix+(line?'\n':'');
+  if(body.value.length-(end-start)+insert.length>20000){toast('正文最多 20,000 字。');return;}
+  remember(true);body.setRangeText(insert,start,end,'end');draft.blocks=[{...draft.blocks[0],text:body.value}];resize(body);touched();$('#document-word-count').textContent=`${body.value.length} 字`;
+  body.focus({preventScroll:true});body.setSelectionRange(start+before.length+prefix.length,start+before.length+prefix.length+text.length);
+ }
+
  const calculated=fn=>{try{return format(fn());}catch(error){return error.message.includes('除数')?'除数不能为 0':'待修正';}};
 
  function currentTable(){return draft.sections?draft.sections.find(p=>p.id===activeTableId)?.table:draft.table;}
@@ -184,6 +212,7 @@ export function createNotes({session,root,changed,toast,onError}){
  }
  function syncTools(){
   const bar=$('.document-writing-tools');if(!bar)return;
+  if(draft?.format==='markdown'){bar.innerHTML=markdownTools();return;}
   bar.innerHTML=tableSelected&&currentTable()?`${button('previous-cell','上一格')}${button('next-cell','下一格')}${button('add-row','＋ 行')}${button('quick-column','＋ 列')}${button('calculate','计算')}<details class="notes-more"><summary aria-label="更多表格操作">•••</summary><div>${button('undo','撤销')}${button('redo','重做')}${button('columns','列设置')}${button('remove-current-row','删除当前行')}${button('remove-current-table','删除表格','danger')}</div></details>`:`${button('undo','撤销')}${button('redo','重做')}<button class="button secondary insert-table-direct" type="button" data-insert-part="table">插入表格</button>`;
   root.querySelectorAll('[data-table-id]').forEach(el=>el.classList.toggle('selected-table',tableSelected&&el.dataset.tableId===activeTableId));
  }
@@ -266,7 +295,14 @@ export function createNotes({session,root,changed,toast,onError}){
   };show();
  }
  async function action(name){
-  if(name==='edit'){textCaret=null;if(!await authorize())return;const n=data().notes.find(n=>n.id===selected);if(!n)return;draft={...structuredClone(n),tagNames:names(n).join(', ')};editing=true;dirty=false;history=[];future=[];renderDetail();return;}
+  if(name==='md-preview'&&editing&&draft?.format==='markdown'){
+   mdPreview=!mdPreview;const body=$('#note-body'),preview=$('#markdown-preview');
+   if(mdPreview)preview.innerHTML=renderMarkdown(documentText(draft))||'<p>暂无正文</p>';
+   body.hidden=mdPreview;preview.hidden=!mdPreview;$('.document-foot').hidden=mdPreview;syncTools();if(!mdPreview)resize(body);return;
+  }
+  if(name.startsWith('md-')&&editing&&draft?.format==='markdown'){insertMarkdown(name.slice(3));return;}
+
+  if(name==='edit'){mdPreview=false;textCaret=null;if(!await authorize())return;const n=data().notes.find(n=>n.id===selected);if(!n)return;draft={...structuredClone(n),tagNames:names(n).join(', ')};editing=true;dirty=false;history=[];future=[];renderDetail();return;}
   if(name==='done'){await flush();if(dirty)return;expandedTable=false;tableSelected=false;document.body.classList.remove('table-expanded');editing=false;draft=null;history=[];future=[];renderList();renderDetail();return;}
   if(['undo','redo','add-row','add-column','retry'].includes(name)&&!editing)return;
 
@@ -282,12 +318,15 @@ export function createNotes({session,root,changed,toast,onError}){
   if(name==='back'){if(await settle()){expandedTable=false;tableSelected=false;document.body.classList.remove('table-expanded');draft=null;selected=null;editing=false;dirty=false;render();}return;}
   if(name==='undo'||name==='redo'){
    const source=name==='undo'?history:future,target=name==='undo'?future:history;
-   if(!source.length)return;target.push(snapshot());draft=source.pop();textCaret=null;lastHistory=0;renderDetail();touched();$('#note-body')?.focus();return;
+   if(!source.length)return;target.push(snapshot());draft=source.pop();mdPreview=false;textCaret=null;lastHistory=0;renderDetail();touched();$('#note-body')?.focus();return;
   }
   if(name==='tags'){await manageTags();return;}
   if(name==='clear-filter'){listPage=1;query='';tag='';render();return;}
   if(!await settle()||!await authorize())return;
   const n=data().notes.find(n=>n.id===selected);if(!n)return;
+  if(name==='export-md'&&n.format==='markdown'){
+   const url=URL.createObjectURL(new Blob([documentText(n)],{type:'text/markdown;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=(noteTitle(n).replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,80)||'文档')+'.md';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);toast('已导出 Markdown 源文件。');return;
+  }
   if(name==='copy'){
    closeDialog();dialog.innerHTML=`<h2>复制文档</h2><p class="gate-hint">内容将进入系统剪贴板。</p><div class="form-footer"><button class="button secondary" data-close-copy>取消</button><button class="button primary" data-copy-note>复制全文</button></div>`;dialog.removeAttribute('aria-labelledby');dialog.setAttribute('aria-label','复制文档');dialog.showModal();
    dialog.querySelector('[data-close-copy]').onclick=()=>closeDialog();

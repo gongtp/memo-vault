@@ -6,6 +6,49 @@ export const noteTitle=n=>n.title.trim()||n.sections?.find(s=>s.type==='text'&&s
 export const noteText=n=>n.sections?sectionsText(n.sections):n.table?tableText(n.table):n.blocks.map(b=>`${b.type==='checklist'?(b.checked?'☑ ':'☐ '):b.type==='bullet'?'• ':''}${b.text}`).join('\n');
 export const hasContent=n=>Boolean(n.sections?.some(s=>s.type==='table'||s.text.trim())||n.table||n.title.trim()||n.blocks.some(b=>b.text.trim()));
 export function newNote(){const now=new Date().toISOString();return {id:crypto.randomUUID(),title:'',blocks:[{id:crypto.randomUUID(),type:'text',text:''}],tagIds:[],recordDate:localDate(),isPinned:false,archivedAt:null,deletedAt:null,createdAt:now,updatedAt:now};}
+export function newMarkdown(text='',title=''){
+ if(typeof text!=='string'||text.length>20000)throw Error('Markdown 正文最多 20,000 字。');
+ const note=newNote();note.format='markdown';note.title=title.slice(0,100);note.blocks[0].text=text;return note;
+}
+// Render only generated markup. Raw HTML is always text; links accept explicit safe protocols.
+export function renderMarkdown(source){
+ const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ function inline(text,depth=0){
+  if(depth>8)return escape(text);
+  const token=/(`+)([^`\n]+?)\1|!?\[([^\]\n]+)\]\(([^\s)]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_|~~([^~\n]+)~~|\\([\\`*_[\]{}()#+.!|>-])/g;
+  let out='',last=0;
+  for(const m of text.matchAll(token)){
+   out+=escape(text.slice(last,m.index));last=m.index+m[0].length;
+   if(m[1])out+=`<code>${escape(m[2])}</code>`;
+   else if(m[3]){let safe=false;try{safe=['http:','https:','mailto:'].includes(new URL(m[4]).protocol);}catch{}out+=safe?`<a href="${escape(m[4])}" target="_blank" rel="noopener noreferrer">${inline(m[3],depth+1)}</a>`:escape(m[0]);}
+   else if(m[5]||m[6])out+=`<strong>${inline(m[5]??m[6],depth+1)}</strong>`;
+   else if(m[7]||m[8])out+=`<em>${inline(m[7]??m[8],depth+1)}</em>`;
+   else if(m[9])out+=`<del>${inline(m[9],depth+1)}</del>`;
+   else out+=escape(m[10]);
+  }
+  return out+escape(text.slice(last));
+ }
+ const lines=source.replace(/\r\n?/g,'\n').split('\n'),out=[];
+ const cells=line=>line.trim().replace(/^\||\|$/g,'').split(/(?<!\\)\|/).map(s=>s.trim());
+ const divider=line=>line.includes('|')&&cells(line).every(s=>/^:?-{3,}:?$/.test(s));
+ const special=line=>/^\s*$|^ {0,3}(?:#{1,6}\s|```|~~~|>|[-+*]\s|\d+[.)]\s|(?:-\s*){3,}$|(?:\*\s*){3,}$|(?:_\s*){3,}$)/.test(line);
+ for(let i=0;i<lines.length;){
+  const line=lines[i];if(!line.trim()){i++;continue;}
+  const fence=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  if(fence){const code=[];i++;while(i<lines.length&&!new RegExp('^ {0,3}'+fence[1][0]+'{'+fence[1].length+',}\\s*$').test(lines[i]))code.push(lines[i++]);if(i<lines.length)i++;out.push(`<pre><code>${escape(code.join('\n'))}</code></pre>`);continue;}
+  const heading=/^ {0,3}(#{1,6})\s+(.*)$/.exec(line);if(heading){out.push(`<h${heading[1].length}>${inline(heading[2].replace(/\s+#+\s*$/,''))}</h${heading[1].length}>`);i++;continue;}
+  if(/^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line)){out.push('<hr>');i++;continue;}
+  if(i+1<lines.length&&line.includes('|')&&divider(lines[i+1])){
+   const headers=cells(line);i+=2;let rows='';while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){const row=cells(lines[i++]);rows+=`<tr>${headers.map((_,j)=>`<td>${inline(row[j]??'')}</td>`).join('')}</tr>`;}
+   out.push(`<div class="markdown-table-scroll" tabindex="0" aria-label="可横向滚动的 Markdown 表格"><table><thead><tr>${headers.map(h=>`<th scope="col">${inline(h)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`);continue;
+  }
+  if(/^ {0,3}>/.test(line)){const quote=[];while(i<lines.length&&/^ {0,3}>/.test(lines[i]))quote.push(lines[i++].replace(/^ {0,3}> ?/,''));out.push(`<blockquote>${quote.map(t=>inline(t)).join('<br>')}</blockquote>`);continue;}
+  const item=/^\s*([-+*]|\d+[.)])\s+(.*)$/.exec(line);
+  if(item){const ordered=/\d/.test(item[1]),tag=ordered?'ol':'ul';let items='';while(i<lines.length){const m=/^\s*([-+*]|\d+[.)])\s+(.*)$/.exec(lines[i]);if(!m||/\d/.test(m[1])!==ordered)break;const task=/^\[([ xX])\]\s+(.*)$/.exec(m[2]);items+=`<li>${task?`<span aria-label="${task[1]===' '?'未完成':'已完成'}">${task[1]===' '?'☐':'☑'}</span> ${inline(task[2])}`:inline(m[2])}</li>`;i++;}out.push(`<${tag}>${items}</${tag}>`);continue;}
+  const paragraph=[line];i++;while(i<lines.length&&!special(lines[i])&&!(i+1<lines.length&&divider(lines[i+1])))paragraph.push(lines[i++]);out.push(`<p>${paragraph.map(t=>inline(t)).join('<br>')}</p>`);
+ }
+ return out.join('');
+}
 export function normalizeDocuments(data){return {...data,notes:data.notes.map(n=>({...n,archivedAt:null,deletedAt:null}))};}
 export function documentText(note){return note.sections?sectionsText(note.sections):note.table?tableText(note.table):note.blocks.map(b=>b.type==='checklist'?`${b.checked?'☑':'☐'} ${b.text}`:b.type==='bullet'?`• ${b.text}`:b.text).join('\n');}
 export function documentBlocks(text){
@@ -27,6 +70,8 @@ export function validateNoteData(value={notes:[],tags:[]}){
  const tags=value.tags.map(t=>{const name=string(t?.name,20).trim();if(!name||/[,，]/.test(name))throw Error('标签名称不能为空或包含逗号。');return {id:id(t.id),name};});
  unique(tags.map(t=>t.id));unique(tags.map(t=>t.name.toLocaleLowerCase()));const tagIds=new Set(tags.map(t=>t.id));
  const notes=value.notes.map(n=>{
+  if(n?.format!==undefined&&n.format!=='markdown')throw Error('不支持的文档类型。');
+  if(n?.format==='markdown'&&(n.sections!==undefined||n.table!==undefined||n.blocks?.length!==1||n.blocks[0]?.type!=='text'))throw Error('Markdown 文档必须保存为独立源码。');
   if(!n||!Array.isArray(n.blocks)||n.blocks.length>2000||!Array.isArray(n.tagIds)||n.tagIds.length>10||typeof n.isPinned!=='boolean')throw Error('笔记格式无效，每篇最多 10 个标签、2,000 个段落。');
   const blocks=n.blocks.map(b=>{if(!b||!['text','bullet','checklist'].includes(b.type)||(b.type==='checklist'&&typeof b.checked!=='boolean'))throw Error('笔记段落无效。');return {id:id(b.id),type:b.type,text:string(b.text,20000),...(b.type==='checklist'?{checked:b.checked}:{})};});
   unique(blocks.map(b=>b.id));if(blocks.reduce((total,b)=>total+b.text.length,0)>20000)throw Error('单篇正文最多 20,000 字。');
@@ -38,7 +83,7 @@ export function validateNoteData(value={notes:[],tags:[]}){
    sections=n.sections.map(part=>{if(!part||!['text','table'].includes(part.type))throw Error('文档内容类型无效。');return {id:id(part.id),type:part.type,...(part.type==='table'?{table:validateTable(part.table)}:{text:string(part.text,20000)})};});
    unique(sections.map(part=>part.id));if(sections.filter(part=>part.type==='table').length>20||sections.reduce((sum,part)=>sum+(part.text?.length??0),0)+blocks.reduce((sum,b)=>sum+b.text.length,0)>20000)throw Error('单篇最多 20 张表格、20,000 字正文。');
   }
-  return {...(sections?{sections}:{}),...(n.table!==undefined?{table:validateTable(n.table)}:{}),id:id(n.id),title:string(n.title,100),blocks,tagIds:[...n.tagIds],recordDate,isPinned:n.isPinned,archivedAt:n.archivedAt===null?null:time(n.archivedAt),deletedAt:n.deletedAt===null?null:time(n.deletedAt),createdAt:time(n.createdAt),updatedAt:time(n.updatedAt)};
+  return {...(n.format==='markdown'?{format:'markdown'}:{}),...(sections?{sections}:{}),...(n.table!==undefined?{table:validateTable(n.table)}:{}),id:id(n.id),title:string(n.title,100),blocks,tagIds:[...n.tagIds],recordDate,isPinned:n.isPinned,archivedAt:n.archivedAt===null?null:time(n.archivedAt),deletedAt:n.deletedAt===null?null:time(n.deletedAt),createdAt:time(n.createdAt),updatedAt:time(n.updatedAt)};
  });unique(notes.map(n=>n.id));return {notes,tags};
 }
 export function pruneNoteData(data,now=Date.now()){return {...data,notes:data.notes.filter(n=>!n.deletedAt||now-Date.parse(n.deletedAt)<RETENTION_MS)};}

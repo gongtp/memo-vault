@@ -5,6 +5,9 @@ import {ConflictError,LockedError} from './vault.mjs';
 import {ModuleVault,parseBackupFile,MAX_BACKUP_BYTES} from './module-vault.mjs';
 import {installAutoLock} from './lifecycle.mjs';
 const paths = {
+ chevron:'<path d="m7 10 5 5 5-5"/>',
+ more:'<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
+
  trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
  grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
  key:'<circle cx="8" cy="8" r="5"/><path d="m11.5 11.5 9 9m-3-3 3-3m-6 0 3-3"/>',
@@ -30,7 +33,7 @@ const paths = {
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.key}</svg>`;
 function hydrateIcons(){document.querySelectorAll('[data-icon]').forEach(el=>el.outerHTML=icon(el.dataset.icon));}
 const escapeHTML = (value='') => String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let accounts=[],accountPage=1;
+let accounts=[],accountPage=1,onlyFavorites=false;
 const session=new ModuleVault();
 let page='overview',filter='全部',query='',selected=null,sort='recent',editId=null,showPassword=false,pendingImport=null;
 let existing=false,ready=false,busy=false,authAction=null,authorization=null,revealTimer,authTimer,pendingDelete=null,optionKind='categories',pendingOptionDelete=null;
@@ -66,21 +69,7 @@ function render(){
 function renderAccounts(){
  content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">A PLACE FOR YOUR DIGITAL LIFE</span><h1>账号管理</h1><p>收好每一个数字身份，让生活少一点忘记。</p></div><button class="button primary" data-action="add">${icon('plus')}添加账号</button></div><div class="accounts-layout"><section class="list-panel" aria-label="账号列表"><div class="list-toolbar"><div class="list-title"><h2>我的账号<span id="list-count"></span></h2><select class="sort-select" id="sort" aria-label="账号排序"><option value="recent">最近更新 ↓</option><option value="name">名称排序 ↓</option></select></div><div class="search-box">${icon('search')}<input id="search" type="search" aria-label="搜索账号" placeholder="搜索平台、账号或备注…" value="${escapeHTML(query)}"><kbd>⌘ / Ctrl K</kbd></div><div class="filters account-filters"></div></div><div class="table-head"><span>平台 / 登录账号</span><span>分类</span><span>常用</span></div><div id="account-rows"></div><div id="account-pagination"></div><div class="list-footer"><span id="result-count"></span><span>${icon('clock')}仅本次会话</span></div></section><aside class="detail-panel" id="detail" aria-label="账号详情"></aside></div>${footer()}`;
  document.querySelector('.list-footer span:last-child').innerHTML=`${icon('shield')}本地已加密`;
- document.querySelector('.account-filters').innerHTML=[['全部','全部'],['常用','☆ 常用']].map(([key,label])=>`<button class="filter ${filter===key?'active':''}" data-filter="${escapeHTML(key)}" aria-pressed="${filter===key}">${escapeHTML(label)}</button>`).join('');
- const categorySelect=document.createElement('select');categorySelect.id='account-category-filter';categorySelect.className='account-category-filter';categorySelect.setAttribute('aria-label','按账号分类筛选');
- categorySelect.innerHTML='<option value="全部">选择分类</option>'+session.options.categories.map(name=>`<option value="${escapeHTML('category:'+name)}">${escapeHTML(name)}</option>`).join('');
- categorySelect.value=filter.startsWith('category:')?filter:'全部';categorySelect.classList.toggle('active',filter.startsWith('category:'));
- categorySelect.onchange=e=>{
-  hidePassword();accountPage=1;filter=e.target.value;
-  // Keep the native select mounted: replacing and refocusing it can reopen mobile pickers.
-  categorySelect.classList.toggle('active',filter.startsWith('category:'));
-  document.querySelectorAll('.account-filters [data-filter]').forEach(button=>{
-   const active=button.dataset.filter===filter;
-   button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));
-  });
-  renderRows();
- };
- document.querySelector('.account-filters').append(categorySelect);
+ document.querySelector('.account-filters').innerHTML=`<button class="category-trigger ${filter.startsWith('category:')?'active':''}" data-action="choose-category"><span>${escapeHTML(filter.startsWith('category:')?categoryPath(filter.slice(9)):'全部分类')}</span>${icon('chevron')}</button><button class="favorite-filter ${onlyFavorites?'active':''}" data-action="toggle-favorites" aria-pressed="${onlyFavorites}">${icon('star')}常用</button>`;
  document.getElementById('sort').value=sort;
  document.getElementById('search').oninput=e=>{showPassword=false;clearTimeout(revealTimer);query=e.target.value;accountPage=1;renderRows();};
  document.getElementById('sort').onchange=e=>{hidePassword();sort=e.target.value;accountPage=1;renderRows();};
@@ -97,7 +86,7 @@ function renderRows(){
  if(!list.length){selected=null;}
  renderDetail();
 }
-function filteredAccounts(){return accounts.filter(a=>(filter==='全部'||(filter==='常用'?a.favorite:a.category===filter.slice(9)))&&[a.name,a.username,a.phone||'',a.note].some(s=>s.toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id);}
+function filteredAccounts(){return accounts.filter(a=>(filter==='全部'||(filter==='常用'?a.favorite:(a.category===filter.slice(9)||(session.options.categoryParents??[]).some(x=>x.parent===filter.slice(9)&&x.name===a.category))))&&(!onlyFavorites||a.favorite)&&[a.name,a.username,a.phone||'',a.note].some(s=>s.toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id);}
 function renderDetail(){
  const a=accounts.find(a=>a.id===selected);const detail=document.getElementById('detail');if(!detail)return;
  if(!a){detail.innerHTML='<div class="empty">选择一个账号，查看详细信息。</div>';return;}
@@ -197,7 +186,8 @@ function clearImport(){
 function closeImport(){clearImport();$('import-dialog').close();}
 function lock(message='已锁定。请输入主密码继续。'){
  const keepNotes=page==='notes'&&!session.policy.notes&&notes.active;
- session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];accountPage=1;query='';selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
+ session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];accountPage=1;query='';onlyFavorites=false;selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
+ $('category-tree').replaceChildren();$('category-editor-form').reset();$('category-parent').replaceChildren();$('category-search').value='';$('category-error').textContent='';$('form-category-button').textContent='未分类';expandedCategories.clear();categoryEditing=null;accountReturnPosition=null;
  clearTimeout(revealTimer);clearAuth();clearImport();cancelMaster();
  for(const dialog of document.querySelectorAll('dialog[open]'))if(!keepNotes||!dialog.classList.contains('notes-dialog'))dialog.close();
  $('account-form').reset();$('account-form').elements.category.replaceChildren();$('account-form').elements.method.replaceChildren();$('gate-form').reset();$('change-password-form').reset();$('change-password-error').textContent='';$('save-error').textContent='';
@@ -228,6 +218,7 @@ function openForm(edit=false){
  $('form-title').textContent=edit?'编辑账号':'添加一个账号';
  populateAccountOptions({category:session.options.categories[0]??'',method:session.options.methods[0]??''});
  if(edit){const a=accounts.find(a=>a.id===selected);if(!a)return;for(const field of ['name','username','phone','category','method','password','url','note'])form.elements[field].value=a[field]??'';form.elements.favorite.checked=a.favorite;}
+ syncCategoryButton();
  refreshDialogViewport();$('account-dialog').showModal();document.querySelector('.account-form-body').scrollTop=0;
 }
 function refreshDialogViewport(){
@@ -372,23 +363,123 @@ function populateAccountOptions(preferred={}){
   const names=session.options[kind];form.elements[field].innerHTML=`<option value="">${empty}</option>`+names.map(name=>`<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join('');
   form.elements[field].value=names.includes(value)?value:'';
  }
+ syncCategoryButton();
 }
+function syncCategoryButton(){const value=$('account-form').elements.category.value;$('form-category-button').textContent=value?categoryPath(value):'未分类';}
+let categoryPickerMode='filter',categoryEditing=null,categoryView='select',categoryScroll=0;
+const expandedCategories=new Set();
+function categoryPath(name){const parent=session.options.categoryParents?.find(x=>x.name===name)?.parent;return parent?`${parent} / ${name}`:name;}
+function openCategoryPicker(mode){
+ if(!session.unlocked||busy)return;
+ categoryView='select';categoryPickerMode=mode;$('category-search').value='';expandedCategories.clear();
+ const chosen=mode==='form'?$('account-form').elements.category.value:filter.slice(9);
+ const parent=session.options.categoryParents?.find(x=>x.name===chosen)?.parent;if(parent)expandedCategories.add(parent);
+ renderCategoryPicker();if(!$('category-picker').open)$('category-picker').showModal();syncCategoryViewport();
+}
+function syncCategoryViewport(){
+ if(!$('category-picker').open)return;
+ const viewport=window.visualViewport;
+ $('category-picker').style.setProperty('--category-vp-height',`${viewport?.height??window.innerHeight}px`);
+ $('category-picker').style.setProperty('--category-vp-bottom',`${Math.max(0,window.innerHeight-(viewport?.height??window.innerHeight)-(viewport?.offsetTop??0))}px`);
+}
+window.visualViewport?.addEventListener('resize',syncCategoryViewport,{passive:true});
+window.visualViewport?.addEventListener('scroll',syncCategoryViewport,{passive:true});
+window.addEventListener('resize',syncCategoryViewport,{passive:true});
+function setCategoryView(view){
+ if(categoryView==='manage')categoryScroll=$('category-tree').scrollTop;
+ categoryView=view;renderCategoryPicker();
+ if(view==='manage')$('category-tree').scrollTop=categoryScroll;
+ $('category-back').focus({preventScroll:true});
+}
+function renderCategoryPicker(){
+ if(!session.unlocked)return;
+ const managing=categoryView==='manage',browsing=categoryView==='select'||managing;
+ $('category-picker-title').textContent=({select:'选择分类',manage:'分类管理',edit:categoryEditing===null?'新建分类':'编辑分类',actions:'分类操作'})[categoryView];
+ $('category-back').hidden=categoryView==='select';$('category-back').setAttribute('aria-label',browsing?'返回分类选择':'返回分类管理');
+ $('category-manage').hidden=!browsing;$('category-manage').textContent=managing?'完成':'管理';
+ $('close-category-picker').hidden=categoryView!=='select';
+ $('category-sheet-hint').hidden=!managing;$('category-browse').hidden=!browsing;
+ $('category-editor-form').hidden=categoryView!=='edit';$('category-actions').hidden=categoryView!=='actions';
+ $('sheet-new-category').hidden=!managing;$('category-select-hint').hidden=managing;
+ if(!browsing)return;
+ const {categories,categoryParents=[]}=session.options,search=$('category-search').value.trim().toLocaleLowerCase();
+ document.querySelector('.category-search').hidden=categories.length<8&&!search;
+ const chosen=categoryPickerMode==='form'?$('account-form').elements.category.value:filter.startsWith('category:')?filter.slice(9):'';
+ const count=name=>accounts.filter(a=>a.category===name||categoryParents.some(x=>x.parent===name&&x.name===a.category)).length;
+ const more=name=>`<button type="button" class="category-more" data-category-more="${escapeHTML(name)}" aria-label="管理${escapeHTML(name)}">${icon('more')}</button>`;
+ const button=(name,label,total,parent=false)=>managing?`<div class="category-choice category-label">${parent?icon('folder'):''}<span>${escapeHTML(label)}</span><small>${total}</small></div>`:`<button type="button" class="category-choice ${chosen===name?'chosen':''}" data-category-choice="${escapeHTML(name)}" aria-pressed="${chosen===name}">${parent?icon(name?'folder':'grid'):''}<span>${escapeHTML(label)}</span><small>${total}</small>${chosen===name?'<b aria-hidden="true">✓</b>':''}</button>`;
+ let html=managing?'':button('',categoryPickerMode==='form'?'未分类':'全部账号',categoryPickerMode==='form'?accounts.filter(a=>!a.category).length:accounts.length,true),matches=0;
+ for(const name of categories.filter(n=>!categoryParents.some(x=>x.name===n))){
+  const children=categoryParents.filter(x=>x.parent===name).map(x=>x.name),parentMatch=name.toLocaleLowerCase().includes(search);
+  const shown=children.filter(n=>parentMatch||n.toLocaleLowerCase().includes(search));
+  if(!parentMatch&&!shown.length)continue;matches++;
+  const expanded=Boolean(search)||expandedCategories.has(name);
+  html+=`<div class="category-branch"><div class="category-parent-row">${button(name,name,count(name),true)}${children.length||managing?`<button type="button" class="category-expand" data-category-expand="${escapeHTML(name)}" aria-label="${expanded?'收起':'展开'}${escapeHTML(name)}" aria-expanded="${expanded}">${icon('chevron')}</button>`:''}${managing?more(name):''}</div>${expanded?`<div class="category-children">${shown.map(n=>`<div class="category-parent-row">${button(n,n,count(n))}${managing?more(n):''}</div>`).join('')}${managing?`<button type="button" class="category-add-child" data-category-add="${escapeHTML(name)}">${icon('plus')}<span>添加子分类</span></button>`:''}</div>`:''}</div>`;
+ }
+ $('category-tree').innerHTML=html+(matches?'':`<p class="gate-hint">${search?'没有匹配的分类':'还没有分类，点击管理开始整理。'}</p>`);
+}
+$('form-category-button').onclick=()=>openCategoryPicker('form');
+$('close-category-picker').onclick=()=>$('category-picker').close();
+$('category-search').oninput=renderCategoryPicker;
+$('category-tree').onclick=e=>{
+ if(busy)return;
+ const add=e.target.closest('[data-category-add]');if(add){openCategoryEditor(null,add.dataset.categoryAdd);return;}
+ const more=e.target.closest('[data-category-more]');if(more){categoryEditing=more.dataset.categoryMore;$('category-action-name').textContent=categoryPath(categoryEditing);$('category-action-error').textContent='';$('category-delete-confirm').hidden=true;setCategoryView('actions');return;}
+ const expand=e.target.closest('[data-category-expand]');if(expand){const name=expand.dataset.categoryExpand;expandedCategories.has(name)?expandedCategories.delete(name):expandedCategories.add(name);renderCategoryPicker();return;}
+ const choice=e.target.closest('[data-category-choice]');if(!choice)return;
+ const name=choice.dataset.categoryChoice;
+ if(categoryPickerMode==='form'){$('account-form').elements.category.value=name;syncCategoryButton();}
+ else{filter=name?'category:'+name:'全部';accountPage=1;hidePassword();renderAccounts();}
+ $('category-picker').close();
+};
+function openCategoryEditor(name=null,parent=''){
+ if(busy||!session.unlocked)return;categoryEditing=name;
+ $('category-name').value=name??'';$('category-error').textContent='';
+ const {categories,categoryParents=[]}=session.options;
+ const hasChildren=categoryParents.some(x=>x.parent===name);
+ $('category-parent').innerHTML='<option value="">无上级（一级分类）</option>'+categories.filter(n=>n!==name&&!categoryParents.some(x=>x.name===n)&&!hasChildren).map(n=>`<option value="${escapeHTML(n)}">${escapeHTML(n)}</option>`).join('');
+ $('category-parent').value=categoryParents.find(x=>x.name===name)?.parent??parent;
+ setCategoryView('edit');
+}
+$('new-category-button').onclick=()=>openCategoryEditor();
+$('sheet-new-category').onclick=()=>openCategoryEditor();
+$('category-manage').onclick=()=>{if(busy)return;if(categoryView==='select'){for(const name of session.options.categories)expandedCategories.add(name);setCategoryView('manage');}else setCategoryView('select');};
+$('category-back').onclick=()=>{if(!busy)setCategoryView(categoryView==='manage'?'select':'manage');};
+$('category-picker').addEventListener('cancel',e=>{if(busy||categoryView!=='select'){e.preventDefault();if(!busy)setCategoryView(categoryView==='manage'?'select':'manage');}});
+$('category-rename').onclick=()=>openCategoryEditor(categoryEditing);
+$('category-delete').onclick=()=>{
+ if(busy)return;
+ const used=accounts.some(a=>a.category===categoryEditing),children=session.options.categoryParents?.some(x=>x.parent===categoryEditing);
+ $('category-action-error').textContent=used?'已有账号使用此分类，请先修改账号归属。':children?'此分类还有子分类，请先移动或删除子分类。':'';
+ $('category-delete-confirm').hidden=Boolean(used||children);
+};
+$('category-delete-save').onclick=()=>{const name=categoryEditing;void perform(async()=>{await session.removeOption('categories',name);refreshOptions();setCategoryView('manage');toast('已删除空分类。');},'category-action-error');};
+$('category-editor-form').onsubmit=e=>{
+ e.preventDefault();const original=categoryEditing,name=$('category-name').value.trim(),parent=$('category-parent').value;
+ void perform(async()=>{
+  await session.saveCategory(original,name,parent);
+  if(original!==null&&filter==='category:'+original)filter='category:'+name;
+  const preferred=$('account-form').elements.category.value===original?{category:name}:{};
+  if(parent)expandedCategories.add(parent);if(expandedCategories.delete(original))expandedCategories.add(name);refreshOptions(preferred);setCategoryView('manage');toast('分类已保存，账号归属已保留。');
+ },'category-error');
+};
 function clearOptions(){pendingOptionDelete=null;$('option-add-form').reset();$('option-list').replaceChildren();$('option-delete-panel').hidden=true;$('option-delete-description').textContent='';$('option-error').textContent='';}
 function renderOptionManager(){
  if(!session.unlocked)return;
  const field=optionKind==='categories'?'category':'method';const names=session.options[optionKind];
+ $('new-category-button').hidden=optionKind!=='categories';$('option-add-form').hidden=optionKind==='categories';
  $('options-title').textContent=optionKind==='categories'?'管理所属分类':'管理登录方式';
  $('option-kind-categories').classList.toggle('active',optionKind==='categories');$('option-kind-methods').classList.toggle('active',optionKind==='methods');
- $('option-list').innerHTML=names.length?names.map((name,index)=>`<div class="option-row"><span>${escapeHTML(name)}<small>${accounts.filter(a=>a[field]===name).length} 个账号使用</small></span><button class="icon-button delete-action" type="button" data-remove-option="${index}" aria-label="删除${escapeHTML(name)}">${icon('trash')}</button></div>`).join(''):'<p class="gate-hint">暂无选项，可以添加新的。</p>';
+ $('option-list').innerHTML=names.length?names.map((name,index)=>`<div class="option-row"><span>${escapeHTML(optionKind==='categories'?categoryPath(name):name)}<small>${accounts.filter(a=>a[field]===name).length} 个账号使用</small></span>${optionKind==='categories'?`<button class="button secondary" type="button" data-edit-category="${index}">编辑</button>`:''}<button class="icon-button delete-action" type="button" data-remove-option="${index}" aria-label="删除${escapeHTML(name)}">${icon('trash')}</button></div>`).join(''):'<p class="gate-hint">暂无选项，可以添加新的。</p>';
  pendingOptionDelete=null;$('option-delete-panel').hidden=true;syncButtons();
 }
 function openOptionManager(kind){
- if(!session.unlocked||busy)return;optionKind=kind;clearOptions();renderOptionManager();$('options-dialog').showModal();
+ if(!session.unlocked||busy)return;if(kind==='categories'){openCategoryPicker($('account-dialog').open?'form':'filter');for(const name of session.options.categories)expandedCategories.add(name);setCategoryView('manage');return;}optionKind=kind;clearOptions();renderOptionManager();$('options-dialog').showModal();
 }
 function refreshOptions(preferred={}){
  accounts=session.accounts;
  if(filter.startsWith('category:')&&!session.options.categories.includes(filter.slice(9)))filter='全部';
- render();populateAccountOptions(preferred);renderOptionManager();changed();
+ render();populateAccountOptions(preferred);renderOptionManager();if($('category-picker').open)renderCategoryPicker();changed();
 }
 $('option-add-form').onsubmit=e=>{
  e.preventDefault();const name=$('new-option-name').value.trim(),kind=optionKind;
@@ -396,8 +487,9 @@ $('option-add-form').onsubmit=e=>{
  void perform(async()=>{await session.addOption(kind,name);$('option-add-form').reset();refreshOptions({[kind==='categories'?'category':'method']:name});toast('已添加选项。');},'option-error');
 };
 document.addEventListener('click',async e=>{
+ const editCategory=e.target.closest('[data-edit-category]');if(editCategory){openCategoryEditor(session.options.categories[Number(editCategory.dataset.editCategory)]);return;}
  const manage=e.target.closest('[data-manage-options]');if(manage){openOptionManager(manage.dataset.manageOptions);return;}
- const kind=e.target.closest('[data-option-kind]');if(kind&&!busy){optionKind=kind.dataset.optionKind;renderOptionManager();$('option-error').textContent='';return;}
+ const kind=e.target.closest('[data-option-kind]');if(kind&&!busy){if(kind.dataset.optionKind==='categories'){$('options-dialog').close();openOptionManager('categories');return;}optionKind=kind.dataset.optionKind;renderOptionManager();$('option-error').textContent='';return;}
  const remove=e.target.closest('[data-remove-option]');if(!remove||busy||!session.unlocked)return;
  const name=session.options[optionKind][Number(remove.dataset.removeOption)];if(name===undefined)return;
  const field=optionKind==='categories'?'category':'method';const count=accounts.filter(a=>a[field]===name).length;
@@ -456,7 +548,9 @@ document.addEventListener('click',async e=>{
  if(action==='explain')explain();
  if(action==='reveal'){if(showPassword)hidePassword();else requestVerification('reveal');}
  if(action==='back')returnToAccountList();
- if(action==='reset'){accountPage=1;hidePassword();filter='全部';query='';renderAccounts();}
+ if(action==='choose-category'){openCategoryPicker('filter');return;}
+ if(action==='toggle-favorites'){onlyFavorites=!onlyFavorites;accountPage=1;hidePassword();renderAccounts();return;}
+ if(action==='reset'){onlyFavorites=false;accountPage=1;hidePassword();filter='全部';query='';renderAccounts();}
  if(action==='favorite')void perform(async()=>{
   hidePassword();const next=accounts.map(a=>a.id===selected?{...a,favorite:!a.favorite}:a);
   const mobile=document.querySelector('.accounts-layout').classList.contains('show-detail');
@@ -493,7 +587,7 @@ $('import-confirm').onchange=syncButtons;
 $('confirm-import').onclick=()=>void perform(async()=>{
  if(!pendingImport||!$('import-confirm').checked)return;
  const staged=pendingImport;await session.importPrepared(staged);changed();closeImport();
- page='accounts';filter='全部';query='';accountPage=1;enterVault();toast('备份已导入并保存到本设备。');
+ page='accounts';filter='全部';query='';onlyFavorites=false;accountPage=1;enterVault();toast('备份已导入并保存到本设备。');
 },'import-error');
 $('account-form').onsubmit=e=>{
  e.preventDefault();if(busy||!session.unlocked)return;
@@ -505,7 +599,7 @@ $('account-form').onsubmit=e=>{
  void perform(async()=>{
   const next=editId?accounts.map(a=>a.id===editId?record:a):[...accounts,record];await session.save(next);
   accounts=session.accounts;selected=record.id;
-  if(!prior){filter='全部';query='';}
+  if(!prior){filter='全部';query='';onlyFavorites=false;}
   const index=filteredAccounts().findIndex(a=>a.id===record.id);
   if(index>=0)accountPage=Math.floor(index/10)+1;
   page='accounts';$('account-form').reset();$('account-dialog').close();editId=null;changed();render();

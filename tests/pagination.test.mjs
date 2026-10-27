@@ -35,7 +35,7 @@ test('账号实际列表渲染只展示当前页，选中项随页切换，删�
  const {readFile}=await import('node:fs/promises'),{runInNewContext}=await import('node:vm');
  const source=await readFile(new URL('../app.js',import.meta.url),'utf8');
  const render=source.slice(source.indexOf('function renderRows(){'),source.indexOf('function renderDetail(){'));
- const nodes=new Map();const context={accounts:Array.from({length:21},(_,i)=>({id:i,name:'账号'+i,username:'user'+i,note:'',date:'2026-10-26',category:'',favorite:false})),filter:'全部',query:'',sort:'recent',selected:20,accountPage:3,paginate,paginationControls,escapeHTML:String,platform:()=>'',icon:()=>'',renderDetail:()=>{},document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{});return nodes.get(id);}}};
+ const nodes=new Map();const context={onlyFavorites:false,accounts:Array.from({length:21},(_,i)=>({id:i,name:'账号'+i,username:'user'+i,note:'',date:'2026-10-26',category:'',favorite:false})),filter:'全部',query:'',sort:'recent',selected:20,accountPage:3,paginate,paginationControls,escapeHTML:String,platform:()=>'',icon:()=>'',renderDetail:()=>{},document:{getElementById:id=>{if(!nodes.has(id))nodes.set(id,{});return nodes.get(id);}}};
  runInNewContext(render+'renderRows();',context);assert.equal((nodes.get('account-rows').innerHTML.match(/data-account=/g)||[]).length,1);assert.equal(context.selected,0);
  context.accounts=context.accounts.filter(a=>a.id!==0);runInNewContext('renderRows();',context);assert.equal(context.accountPage,2);assert.equal((nodes.get('account-rows').innerHTML.match(/data-account=/g)||[]).length,10);
  context.query='user20';context.accountPage=1;runInNewContext('renderRows();',context);assert.equal(context.selected,20);assert.match(nodes.get('account-pagination').innerHTML,/共 1 条/);

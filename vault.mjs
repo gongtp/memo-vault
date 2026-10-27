@@ -85,6 +85,12 @@ export function validateOptions(value,accounts=[]){
     result[kind]=[...list];
   }
   for(const a of accounts)if((a.category&&!result.categories.includes(a.category))||(a.method&&!result.methods.includes(a.method)))throw new Error('账号引用了已删除或不存在的分类/登录方式。');
+  if(value.categoryParents!==undefined){
+    const links=value.categoryParents;
+    if(!Array.isArray(links)||links.length>100||links.some(x=>!x||!result.categories.includes(x.name)||!result.categories.includes(x.parent)||x.name===x.parent)||new Set(links.map(x=>x.name)).size!==links.length)throw Error('分类层级无效。');
+    if(links.some(x=>links.some(y=>y.name===x.parent)))throw Error('分类最多支持两级。');
+    result.categoryParents=links.map(({name,parent})=>({name,parent}));
+  }
   return result;
 }
 export async function encryptAccounts(accounts,key,params,settings,options,noteData){

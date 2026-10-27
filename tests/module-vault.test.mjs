@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {ModuleVault,parseBackupFile,MAX_BACKUP_BYTES} from '../module-vault.mjs';
 import {VaultSession,DEFAULT_PASSWORD,ConflictError,LockedError,deriveKey,decryptVault} from '../vault.mjs';
-import {newNote,normalizeDocuments,documentText,documentBlocks} from '../notes-model.mjs';
+import {newMarkdown,newNote,normalizeDocuments,documentText,documentBlocks} from '../notes-model.mjs';
 class Store{
  value=null;fail=false;
  async read(){return structuredClone(this.value);}
@@ -11,6 +11,28 @@ class Store{
 const account={id:1,name:'测试账号',username:'me',password:'account-secret',category:'开发工具',method:'密码登录',url:'',note:'',favorite:false,date:'2026.10.23',color:'#efefff',ink:'#7a77ca',letter:'测'};
 function note(){const n=newNote();n.title='note-secret';n.blocks[0].text='独立笔记';return n;}
 async function fixture(){const store=new Store(),vault=new ModuleVault(store);await vault.load();return {store,vault};}
+
+test('Markdown 与普通笔记、账号共同备份恢复，并在加密模式下保留源码类型',async()=>{
+ const {vault}=await fixture();await vault.unlock(DEFAULT_PASSWORD);await vault.save([account]);const plain=note(),md=newMarkdown('# Markdown\n\n**原文**','MD 测试');await vault.saveNote(plain);await vault.saveNote(md);
+ await vault.setModuleLock('notes',true,DEFAULT_PASSWORD);vault.lock();await vault.unlock(DEFAULT_PASSWORD,'settings');assert.equal(documentText(vault.noteData.notes.find(n=>n.id===md.id)),documentText(md));
+ const backup=parseBackupFile(await vault.exportFile());assert.equal(backup.version,4);
+ const {vault:target}=await fixture();await target.unlock(DEFAULT_PASSWORD,'settings');await target.importPrepared(await target.stageImport(backup,DEFAULT_PASSWORD));assert.deepEqual(target.accounts,[account]);assert.deepEqual(target.noteData,vault.noteData);
+});
+
+test('两级分类兼容旧分类，移动改名保留账号，备份保留层级，非法移动与保存失败不改数据',async()=>{
+ const {store,vault}=await fixture();await vault.unlock(DEFAULT_PASSWORD);await vault.save([account]);
+ assert.equal(vault.options.categoryParents,undefined);
+ await vault.saveCategory(null,'工作');await vault.saveCategory('开发工具','开发工具','工作');
+ assert.equal(vault.accounts[0].category,'开发工具');
+ await vault.saveCategory('工作','办公');assert.deepEqual(vault.options.categoryParents,[{name:'开发工具',parent:'办公'}]);
+ await vault.saveCategory('开发工具','编程','办公');assert.equal(vault.accounts[0].category,'编程');
+ const before=vault.options;
+ await assert.rejects(vault.saveCategory(null,'第三层','编程'));await assert.rejects(vault.saveCategory('办公','办公','编程'));await assert.rejects(vault.removeOption('categories','办公'));await assert.rejects(vault.saveCategory(null,'编程'));
+ assert.deepEqual(vault.options,before);
+ store.fail=true;await assert.rejects(vault.saveCategory('编程','不会保存'));assert.equal(vault.accounts[0].category,'编程');assert.deepEqual(vault.options,before);store.fail=false;
+ const backup=parseBackupFile(await vault.exportFile()),{vault:target}=await fixture();await target.unlock(DEFAULT_PASSWORD,'settings');await target.importPrepared(await target.stageImport(backup,DEFAULT_PASSWORD));assert.deepEqual(target.options,before);assert.deepEqual(target.accounts,vault.accounts);
+ await target.saveCategory('编程','编程','');assert.deepEqual(target.options.categoryParents,[]);await target.removeOption('categories','办公');
+});
 
 test('选填手机号兼容旧账号，并随加密保存及备份导入保留和清空',async()=>{
  const {store,vault}=await fixture();await vault.unlock(DEFAULT_PASSWORD);
