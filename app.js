@@ -87,7 +87,7 @@ function renderAccounts(){
  renderRows(); renderDetail();
 }
 function renderRows(){
- const list=accounts.filter(a=>(filter==='全部'||(filter==='常用'?a.favorite:a.category===filter.slice(9)))&&[a.name,a.username,a.note].some(s=>s.toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id);
+ const list=filteredAccounts();
  const view=paginate(list,accountPage);accountPage=view.page;
  if(!view.items.some(a=>a.id===selected))selected=view.items[0]?.id??null;
  document.getElementById('account-pagination').innerHTML=paginationControls(view,'accounts');
@@ -97,11 +97,12 @@ function renderRows(){
  if(!list.length){selected=null;}
  renderDetail();
 }
+function filteredAccounts(){return accounts.filter(a=>(filter==='全部'||(filter==='常用'?a.favorite:a.category===filter.slice(9)))&&[a.name,a.username,a.phone||'',a.note].some(s=>s.toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id);}
 function renderDetail(){
  const a=accounts.find(a=>a.id===selected);const detail=document.getElementById('detail');if(!detail)return;
  if(!a){detail.innerHTML='<div class="empty">选择一个账号，查看详细信息。</div>';return;}
  const safeUrl=(()=>{try{const u=new URL(a.url);return ['https:','http:'].includes(u.protocol)?u.href:'';}catch{return '';}})();
- detail.innerHTML=`<div class="detail-topline"><span class="detail-heading">账号详情</span><button class="mobile-back" data-action="back">${icon('back')}账号列表</button><div class="detail-actions"><button class="icon-button" data-action="favorite" aria-label="${a.favorite?'取消常用':'设为常用'}" title="${a.favorite?'取消常用':'设为常用'}"><span class="star-icon ${a.favorite?'on':''}">${icon('star')}</span></button><button class="icon-button" data-action="edit" aria-label="编辑账号" title="编辑账号">${icon('edit')}</button><button class="icon-button delete-action" data-action="delete" aria-label="删除账号" title="删除账号">${icon('trash')}</button></div></div><div class="detail-hero">${platform(a)}<h2>${escapeHTML(a.name)}</h2><p>${safeUrl?escapeHTML(new URL(safeUrl).hostname):'自定义账号'}</p><span class="category-tag">${escapeHTML(a.category||'未分类')}</span></div><div class="detail-fields"><div class="field"><span class="field-label">登录账号</span><div class="field-value"><span>${escapeHTML(a.username)}</span><button class="icon-button" data-copy="username" aria-label="复制登录账号">${icon('copy')}</button></div></div><div class="field"><span class="field-label">登录方式</span><div class="field-value"><span>${escapeHTML(a.method||'未设置')}</span></div></div><div class="field"><span class="field-label">密码</span><div class="field-value"><span class="${a.password&&!showPassword?'password-text':''}">${a.password?(showPassword?escapeHTML(a.password):'••••••••••••'):'无需保存密码'}</span>${a.password?`<div class="field-buttons"><button class="icon-button" data-action="reveal" aria-label="${showPassword?'隐藏':'显示'}密码" aria-pressed="${showPassword}">${icon('eye')}</button><button class="icon-button" data-copy="password" aria-label="复制密码">${icon('copy')}</button></div>`:''}</div></div><div class="field"><span class="field-label">网站地址</span><div class="field-value">${safeUrl?`<a href="${escapeHTML(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(new URL(safeUrl).hostname)}${icon('arrow')}</a>`:'<span>未填写</span>'}</div></div><div class="field"><span class="field-label">备注</span><div class="note-box">${escapeHTML(a.note||'暂无备注')}</div></div></div><div class="detail-footer"><span>最近更新</span><span>${escapeHTML(a.date)}</span></div>`;
+ detail.innerHTML=`<div class="detail-topline"><span class="detail-heading">账号详情</span><button class="mobile-back" data-action="back">${icon('back')}账号列表</button><div class="detail-actions"><button class="icon-button" data-action="favorite" aria-label="${a.favorite?'取消常用':'设为常用'}" title="${a.favorite?'取消常用':'设为常用'}"><span class="star-icon ${a.favorite?'on':''}">${icon('star')}</span></button><button class="icon-button" data-action="edit" aria-label="编辑账号" title="编辑账号">${icon('edit')}</button><button class="icon-button delete-action" data-action="delete" aria-label="删除账号" title="删除账号">${icon('trash')}</button></div></div><div class="detail-hero">${platform(a)}<h2>${escapeHTML(a.name)}</h2><p>${safeUrl?escapeHTML(new URL(safeUrl).hostname):'自定义账号'}</p><span class="category-tag">${escapeHTML(a.category||'未分类')}</span></div><div class="detail-fields"><div class="field"><span class="field-label">登录账号</span><div class="field-value"><span>${escapeHTML(a.username)}</span><button class="icon-button" data-copy="username" aria-label="复制登录账号">${icon('copy')}</button></div></div><div class="field"><span class="field-label">登录方式</span><div class="field-value"><span>${escapeHTML(a.method||'未设置')}</span></div></div><div class="field"><span class="field-label">密码</span><div class="field-value"><span class="${a.password&&!showPassword?'password-text':''}">${a.password?(showPassword?escapeHTML(a.password):'••••••••••••'):'无需保存密码'}</span>${a.password?`<div class="field-buttons"><button class="icon-button" data-action="reveal" aria-label="${showPassword?'隐藏':'显示'}密码" aria-pressed="${showPassword}">${icon('eye')}</button><button class="icon-button" data-copy="password" aria-label="复制密码">${icon('copy')}</button></div>`:''}</div></div><div class="field"><span class="field-label">手机号</span><div class="field-value"><span>${escapeHTML(a.phone||'未填写')}</span>${a.phone?`<button class="icon-button" data-copy="phone" aria-label="复制手机号">${icon('copy')}</button>`:''}</div></div><div class="field"><span class="field-label">网站地址</span><div class="field-value">${safeUrl?`<a href="${escapeHTML(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(new URL(safeUrl).hostname)}${icon('arrow')}</a>`:'<span>未填写</span>'}</div></div><div class="field"><span class="field-label">备注</span><div class="note-box">${escapeHTML(a.note||'暂无备注')}</div></div></div><div class="detail-footer"><span>最近更新</span><span>${escapeHTML(a.date)}</span></div>`;
 }
 function renderOverview(){content.innerHTML=`<div class="page-heading"><div><span class="eyebrow">YOUR PERSONAL WORKSPACE</span><h1>生活有序，心有余地。</h1><p>这里是你的私人信息空间，收好账号，也记下生活。</p></div></div>${session.isOpen('accounts')?stats():'<p class="gate-hint">账号管理已锁定，进入时输入主密码。</p>'}<div class="settings-grid"><section class="setting-card">${icon('key')}<h2>重要的账号，随时找得到</h2><p>按平台、分类和备注快速查找数字身份。常用账号可以收藏，跨平台登录方式也能一并记录。</p><button class="button primary" data-page="accounts">进入账号管理 →</button></section><section class="setting-card">${icon('grid')}<h2>给日常留一点空间</h2><p>生活琐事、灵感和清单，都可以随手记下。</p><button class="button primary" data-page="notes" data-new-note>＋ 写一条笔记</button><div class="roadmap">${icon('key')}<span>账号管理<small>账号、登录方式、分类与备注</small></span><span>本期设计</span></div><div class="roadmap">${icon('note')}<span>日常笔记<small>连续正文、标签与自动保存</small></span><span>已可使用</span></div><div class="roadmap">${icon('card')}<span>订阅管理<small>费用、周期与到期提醒</small></span><span>后续规划</span></div><div class="roadmap">${icon('folder')}<span>个人资料<small>让常用资料各有归处</small></span><span>后续规划</span></div></section></div>${footer()}`;}
 function renderSettings(){
@@ -209,7 +210,7 @@ function openForm(edit=false){
  hidePassword();editId=edit?selected:null;const form=$('account-form');form.reset();$('save-error').textContent='';
  $('form-title').textContent=edit?'编辑账号':'添加一个账号';
  populateAccountOptions({category:session.options.categories[0]??'',method:session.options.methods[0]??''});
- if(edit){const a=accounts.find(a=>a.id===selected);if(!a)return;for(const field of ['name','username','category','method','password','url','note'])form.elements[field].value=a[field];form.elements.favorite.checked=a.favorite;}
+ if(edit){const a=accounts.find(a=>a.id===selected);if(!a)return;for(const field of ['name','username','phone','category','method','password','url','note'])form.elements[field].value=a[field]??'';form.elements.favorite.checked=a.favorite;}
  refreshDialogViewport();$('account-dialog').showModal();document.querySelector('.account-form-body').scrollTop=0;
 }
 function refreshDialogViewport(){
@@ -217,8 +218,34 @@ function refreshDialogViewport(){
  document.documentElement.style.setProperty('--dialog-vp-height',`${viewport?.height??window.innerHeight}px`);
  document.documentElement.style.setProperty('--dialog-vp-top',`${viewport?.offsetTop??0}px`);
 }
-for(const event of ['resize','scroll'])window.visualViewport?.addEventListener(event,()=>{if($('account-dialog').open)refreshDialogViewport();},{passive:true});
-window.addEventListener('resize',()=>{if($('account-dialog').open)refreshDialogViewport();},{passive:true});
+let accountFocusFrame=0,accountFocusTimer=0;
+function revealAccountField(){
+ const dialog=$('account-dialog'),field=document.activeElement,body=dialog.querySelector('.account-form-body');
+ if(!dialog.open||!body?.contains(field)||!field.matches('input:not([type=checkbox]),textarea,select'))return;
+ const area=body.getBoundingClientRect(),rect=field.getBoundingClientRect(),viewport=window.visualViewport;
+ const top=Math.max(area.top,viewport?.offsetTop??0)+12;
+ const bottom=Math.min(area.bottom,(viewport?.offsetTop??0)+(viewport?.height??window.innerHeight))-12;
+ if(bottom<=top)return;
+ // Scroll only the form body, after keyboard-driven layout; never move focus or the page.
+ const delta=rect.top<top?rect.top-top:rect.bottom>bottom?Math.min(rect.bottom-bottom,rect.top-top):0;
+ if(delta)body.scrollTop+=delta;
+}
+function scheduleAccountField(){
+ cancelAnimationFrame(accountFocusFrame);
+ accountFocusFrame=requestAnimationFrame(revealAccountField);
+}
+function resizeAccountDialog(){
+ if(!$('account-dialog').open)return;
+ refreshDialogViewport();scheduleAccountField();
+}
+window.visualViewport?.addEventListener('resize',resizeAccountDialog,{passive:true});
+window.visualViewport?.addEventListener('scroll',()=>{if($('account-dialog').open)refreshDialogViewport();},{passive:true});
+window.addEventListener('resize',resizeAccountDialog,{passive:true});
+$('account-form').addEventListener('focusin',()=>{
+ scheduleAccountField();clearTimeout(accountFocusTimer);
+ accountFocusTimer=setTimeout(()=>{if($('account-dialog').open){refreshDialogViewport();scheduleAccountField();}},400);
+});
+$('account-dialog').addEventListener('close',()=>{cancelAnimationFrame(accountFocusFrame);clearTimeout(accountFocusTimer);});
 function requestVerification(type){
  if(!session.unlocked||(type!=='changePassword'&&!accounts.some(a=>a.id===selected)))return;
  if(!session.settings.verifyBeforeActions){runAccountAction(type);return;}
@@ -402,7 +429,7 @@ document.addEventListener('click',async e=>{
  const row=e.target.closest('[data-account]');if(row){hidePassword();selected=Number(row.dataset.account);renderRows();document.querySelector('.accounts-layout').classList.add('show-detail');window.scrollTo(0,0);return;}
  const copy=e.target.closest('[data-copy]');if(copy){
   if(copy.dataset.copy==='password')requestVerification('copy');
-  else navigator.clipboard?.writeText(accounts.find(a=>a.id===selected).username).then(()=>toast('登录账号已复制。')).catch(()=>toast('浏览器未允许复制，请手动选择。'));
+  else navigator.clipboard?.writeText(accounts.find(a=>a.id===selected)[copy.dataset.copy==='phone'?'phone':'username']).then(()=>toast(copy.dataset.copy==='phone'?'手机号已复制。':'登录账号已复制。')).catch(()=>toast('浏览器未允许复制，请手动选择。'));
   return;
  }
  if(action==='add')openForm();
@@ -454,12 +481,19 @@ $('confirm-import').onclick=()=>void perform(async()=>{
 $('account-form').onsubmit=e=>{
  e.preventDefault();if(busy||!session.unlocked)return;
  const data=new FormData(e.target);const prior=accounts.find(a=>a.id===editId);
+ const keepDetail=Boolean(document.querySelector('.accounts-layout')?.classList.contains('show-detail'));
  const record={id:editId||Math.max(Date.now(),...accounts.map(a=>a.id+1)),color:prior?.color||'#efefff',ink:prior?.ink||'#7a77ca',letter:prior?.letter||String(data.get('name')).slice(0,1).toUpperCase(),...(prior?.logo?{logo:prior.logo}:{}),
-  ...Object.fromEntries(['name','username','category','method','password','url','note'].map(k=>[k,k==='password'?String(data.get(k)):String(data.get(k)).trim()])),favorite:data.has('favorite'),date:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).replaceAll('-','.')};
+  ...Object.fromEntries(['name','username','phone','category','method','password','url','note'].map(k=>[k,k==='password'?String(data.get(k)):String(data.get(k)??'').trim()])),favorite:data.has('favorite'),date:new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai'}).format(new Date()).replaceAll('-','.')};
  $('save-error').textContent='';
  void perform(async()=>{
   const next=editId?accounts.map(a=>a.id===editId?record:a):[...accounts,record];await session.save(next);
-  accounts=session.accounts;selected=record.id;filter='全部';query='';accountPage=Math.floor([...accounts].sort((a,b)=>sort==='name'?a.name.localeCompare(b.name,'zh-CN'):b.date.localeCompare(a.date)||b.id-a.id).findIndex(a=>a.id===record.id)/10)+1;page='accounts';$('account-form').reset();$('account-dialog').close();changed();render();toast('已加密保存到本设备。');
+  accounts=session.accounts;selected=record.id;
+  if(!prior){filter='全部';query='';}
+  const index=filteredAccounts().findIndex(a=>a.id===record.id);
+  if(index>=0)accountPage=Math.floor(index/10)+1;
+  page='accounts';$('account-form').reset();$('account-dialog').close();editId=null;changed();render();
+  if(prior&&keepDetail&&index>=0)document.querySelector('.accounts-layout')?.classList.add('show-detail');
+  toast(index<0?'已加密保存；该账号已不符合当前筛选条件，筛选已保留。':'已加密保存到本设备。');
  },'save-error');
 };
 const closeAccount=()=>{$('account-form').reset();$('account-dialog').close();editId=null;};

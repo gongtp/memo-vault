@@ -11,6 +11,20 @@ class Store{
 const account={id:1,name:'测试账号',username:'me',password:'account-secret',category:'开发工具',method:'密码登录',url:'',note:'',favorite:false,date:'2026.10.23',color:'#efefff',ink:'#7a77ca',letter:'测'};
 function note(){const n=newNote();n.title='note-secret';n.blocks[0].text='独立笔记';return n;}
 async function fixture(){const store=new Store(),vault=new ModuleVault(store);await vault.load();return {store,vault};}
+
+test('选填手机号兼容旧账号，并随加密保存及备份导入保留和清空',async()=>{
+ const {store,vault}=await fixture();await vault.unlock(DEFAULT_PASSWORD);
+ await vault.save([account]);assert.deepEqual(vault.accounts,[account]);
+ const withPhone={...account,phone:'+86 13800138000'};
+ await vault.save([withPhone]);assert.ok(!JSON.stringify(store.value).includes(withPhone.phone));
+ vault.lock();await vault.unlock(DEFAULT_PASSWORD);assert.deepEqual(vault.accounts,[withPhone]);
+ const backup=parseBackupFile(await vault.exportFile());
+ const {vault:target}=await fixture();await target.unlock(DEFAULT_PASSWORD,'settings');
+ await target.importPrepared(await target.stageImport(backup,DEFAULT_PASSWORD));assert.deepEqual(target.accounts,[withPhone]);
+ await target.save([{...withPhone,phone:''}]);assert.equal(target.accounts[0].phone,'');
+ assert.throws(()=>target.save([{...withPhone,phone:123}]),/phone/);
+ assert.throws(()=>target.save([{...withPhone,phone:'1'.repeat(41)}]),/phone/);
+});
 test('默认仅账号锁定；账号锁定后笔记仍可读取和写入，刷新保留',async()=>{
  const {store,vault}=await fixture();assert.deepEqual(vault.policy,{accounts:true,notes:false});assert.throws(()=>vault.accounts,LockedError);
  const n=note();await vault.saveNote(n,['生活']);await vault.unlock(DEFAULT_PASSWORD);await vault.save([account]);

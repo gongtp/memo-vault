@@ -38,7 +38,7 @@ export function validateAccounts(rows) {
     const date=str('date',10);
     if(!/^\d{4}\.\d{2}\.\d{2}$/.test(date))throw new Error('账号日期格式无效。');
     const name=str('name',60,true);
-    return {id:a.id,name,username:str('username',120,true),password:str('password',200),category,method,url,note:str('note',1000),favorite:a.favorite,date,
+    return {id:a.id,name,username:str('username',120,true),...(a.phone===undefined?{}:{phone:str('phone',40)}),password:str('password',200),category,method,url,note:str('note',1000),favorite:a.favorite,date,
       color:typeof a.color==='string'&&/^#[a-f\d]{6}$/i.test(a.color)?a.color:'#efefff',
       ink:typeof a.ink==='string'&&/^#[a-f\d]{6}$/i.test(a.ink)?a.ink:'#7a77ca',
       letter:typeof a.letter==='string'?a.letter.slice(0,2):name.slice(0,1),...(a.logo==='github'?{logo:'github'}:{})};
