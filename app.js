@@ -167,10 +167,10 @@ async function refreshGate(){
  }catch(error){ready=false;$('gate-title').textContent='无法读取本地信息库';$('gate-error').textContent=errorText(error);syncButtons();}
 }
 function enterVault(){
- if(document.hidden){lock();return;}
+ if(document.hidden){lock(undefined,{preserveAccount:true});return;}
  accounts=session.isOpen('accounts')?session.accounts:[];selected=accounts[0]?.id??null;existing=true;
  $('gate-form').reset();$('gate-error').textContent='';document.body.classList.remove('is-locked');
- render();autoLock.resume();navigator.storage?.persist?.().catch(()=>{});
+ if(!restoreAccountContext())render();autoLock.resume();navigator.storage?.persist?.().catch(()=>{});
  if(session.maintenanceWarning)toast(session.maintenanceWarning);
 }
 function clearAuth(){
@@ -184,7 +184,45 @@ function clearImport(){
  $('import-confirm').checked=false;$('import-error').textContent='';
 }
 function closeImport(){clearImport();$('import-dialog').close();}
-function lock(message='已锁定。请输入主密码继续。'){
+// Session-only UI context. Never persisted, exported, or rendered until accounts unlock.
+let accountResumeContext=null;
+const accountDraftFields=['name','username','phone','category','method','password','url','note'];
+function captureAccountContext(){
+ if(accountResumeContext||page!=='accounts'||!session.isOpen('accounts'))return;
+ const form=$('account-form'),field=document.activeElement,body=document.querySelector('.account-form-body');
+ const editing=$('account-dialog').open;
+ accountResumeContext={selected,filter,query,sort,onlyFavorites,accountPage,detail:Boolean(document.querySelector('.accounts-layout')?.classList.contains('show-detail')),scrollX:window.scrollX,scrollY:window.scrollY,returnPosition:accountReturnPosition?{...accountReturnPosition}:null,
+  form:editing?{editId,prior:editId?JSON.stringify(accounts.find(a=>a.id===editId)):null,values:Object.fromEntries(accountDraftFields.map(name=>[name,form.elements[name].value])),favorite:form.elements.favorite.checked,scrollTop:body.scrollTop,focus:form.contains(field)&&accountDraftFields.includes(field.name)?{name:field.name,start:field.selectionStart,end:field.selectionEnd,direction:field.selectionDirection,scrollTop:field.scrollTop}:null}:null};
+}
+function restoreAccountContext(){
+ if(!accountResumeContext||page!=='accounts'||!session.isOpen('accounts')||document.hidden)return false;
+ const saved=accountResumeContext;accountResumeContext=null;
+ ({selected,filter,query,sort,onlyFavorites,accountPage}=saved);accountReturnPosition=saved.returnPosition;showPassword=false;
+ if(filter.startsWith('category:')&&!session.options.categories.includes(filter.slice(9)))filter='全部';
+ render();
+ const present=accounts.some(a=>a.id===saved.selected);
+ if(saved.detail&&present)document.querySelector('.accounts-layout')?.classList.add('show-detail');
+ window.scrollTo({left:saved.scrollX,top:saved.scrollY,behavior:'instant'});
+ const draft=saved.form;
+ if(draft){
+  if(draft.editId&&JSON.stringify(accounts.find(a=>a.id===draft.editId))!==draft.prior){toast('账号已发生变化，已恢复列表；请重新打开账号核对。');return true;}
+  if(draft.editId)selected=draft.editId;
+  openForm(Boolean(draft.editId));
+  const form=$('account-form');
+  for(const name of accountDraftFields)form.elements[name].value=draft.values[name];
+  form.elements.favorite.checked=draft.favorite;syncCategoryButton();
+  const generation=session.generation;
+  requestAnimationFrame(()=>{
+   if(document.hidden||generation!==session.generation||!$('account-dialog').open)return;
+   const field=draft.focus&&form.elements[draft.focus.name];
+   if(field){field.focus({preventScroll:true});if(draft.focus.start!==null&&typeof field.setSelectionRange==='function')field.setSelectionRange(draft.focus.start,draft.focus.end,draft.focus.direction??'none');field.scrollTop=draft.focus.scrollTop;}
+   document.querySelector('.account-form-body').scrollTop=draft.scrollTop;
+  });
+ }
+ return true;
+}
+function lock(message='已锁定。请输入主密码继续。',{preserveAccount=false}={}){
+ if(preserveAccount)captureAccountContext();else accountResumeContext=null;
  const keepNotes=page==='notes'&&!session.policy.notes&&notes.active;
  session.lock();if(!keepNotes)notes.reset();operation++;busy=false;accounts=[];accountPage=1;query='';onlyFavorites=false;selected=null;editId=null;showPassword=false;clearDelete();clearOptions();
  $('category-tree').replaceChildren();$('category-editor-form').reset();$('category-parent').replaceChildren();$('category-search').value='';$('category-error').textContent='';$('form-category-button').textContent='未分类';expandedCategories.clear();categoryEditing=null;accountReturnPosition=null;
@@ -587,7 +625,7 @@ $('import-confirm').onchange=syncButtons;
 $('confirm-import').onclick=()=>void perform(async()=>{
  if(!pendingImport||!$('import-confirm').checked)return;
  const staged=pendingImport;await session.importPrepared(staged);changed();closeImport();
- page='accounts';filter='全部';query='';onlyFavorites=false;accountPage=1;enterVault();toast('备份已导入并保存到本设备。');
+  accountResumeContext=null;page='accounts';filter='全部';query='';onlyFavorites=false;accountPage=1;enterVault();toast('备份已导入并保存到本设备。');
 },'import-error');
 $('account-form').onsubmit=e=>{
  e.preventDefault();if(busy||!session.unlocked)return;
@@ -611,7 +649,8 @@ const closeAccount=()=>{$('account-form').reset();$('account-dialog').close();ed
 for(const id of ['close-form','cancel-form'])$(id).onclick=closeAccount;
 $('account-dialog').addEventListener('cancel',()=>{$('account-form').reset();editId=null;});
 $('help').onclick=explain;
-const autoLock=installAutoLock({document,window,lock,isUnlocked:()=>session.hasProtectedAccess});
+const autoLock=installAutoLock({document,window,lock:message=>lock(message,{preserveAccount:true}),isUnlocked:()=>session.hasProtectedAccess});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)restoreAccountContext();});
 channel?.addEventListener('message',()=>void reloadModules('另一页面已修改信息库，已刷新本地数据并锁定受保护模块。'));
 document.addEventListener('keydown',async e=>{
  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();if(document.querySelector('dialog[open]'))return;if(page==='notes'&&session.isOpen('notes')){if(!await notes.leave())return;render();document.getElementById('note-search').focus();return;}if(page!=='accounts'){page='accounts';render();}$('search')?.focus();}
